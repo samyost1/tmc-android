@@ -44,7 +44,7 @@ public class SecondScreenManager implements DisplayManager.DisplayListener {
     private boolean mStopped = true;
 
     public SecondScreenManager(Activity activity) {
-        mContext = activity.getApplicationContext();
+        mContext = activity;
         mDisplayManager = (DisplayManager) mContext.getSystemService(Context.DISPLAY_SERVICE);
         mGameDisplayId = activity.getWindowManager().getDefaultDisplay().getDisplayId();
         // Tell native which way round the screens actually ended up. The

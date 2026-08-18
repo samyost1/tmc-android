@@ -1,0 +1,95 @@
+{
+  "format": "tmc-ra-state-manifest-v1",
+  "states": [
+    {
+      "id": "S0",
+      "name": "boot/title",
+      "native": "S0/native",
+      "reference": "S0/reference"
+    },
+    {
+      "id": "S1",
+      "name": "file select",
+      "native": "S1/native",
+      "reference": "S1/reference"
+    },
+    {
+      "id": "S2",
+      "name": "new game intro",
+      "native": "S2/native",
+      "reference": "S2/reference"
+    },
+    {
+      "id": "S3",
+      "name": "first controllable overworld",
+      "native": "S3/native",
+      "reference": "S3/reference"
+    },
+    {
+      "id": "S4",
+      "name": "room transition",
+      "native": "S4/native",
+      "reference": "S4/reference"
+    },
+    {
+      "id": "S5",
+      "name": "pause/items",
+      "native": "S5/native",
+      "reference": "S5/reference"
+    },
+    {
+      "id": "S6",
+      "name": "quest/status",
+      "native": "S6/native",
+      "reference": "S6/reference"
+    },
+    {
+      "id": "S7",
+      "name": "world map",
+      "native": "S7/native",
+      "reference": "S7/reference"
+    },
+    {
+      "id": "S8",
+      "name": "dungeon entry",
+      "native": "S8/native",
+      "reference": "S8/reference"
+    },
+    {
+      "id": "S9",
+      "name": "dungeon map/floor transition",
+      "native": "S9/native",
+      "reference": "S9/reference"
+    },
+    {
+      "id": "S10",
+      "name": "item pickup / progress flag change",
+      "native": "S10/native",
+      "reference": "S10/reference"
+    },
+    {
+      "id": "S11",
+      "name": "save and reload",
+      "native": "S11/native",
+      "reference": "S11/reference"
+    },
+    {
+      "id": "S12",
+      "name": "soft reset/relaunch",
+      "native": "S12/native",
+      "reference": "S12/reference"
+    },
+    {
+      "id": "S13",
+      "name": "authenticated achievement evaluation",
+      "native": "S13/native",
+      "reference": "S13/reference"
+    },
+    {
+      "id": "S14",
+      "name": "normal achievement trigger",
+      "native": "S14/native",
+      "reference": "S14/reference"
+    }
+  ]
+}

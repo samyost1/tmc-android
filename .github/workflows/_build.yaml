@@ -379,6 +379,27 @@ jobs:
              -o /tmp/ppu_affine_test -lm
           /tmp/ppu_affine_test
 
+      - name: RetroAchievements parity tool tests (Linux x86_64)
+        if: matrix.os_name == 'linux' && matrix.arch == 'x86_64'
+        shell: bash
+        env:
+          PYTHONDONTWRITEBYTECODE: "1"
+        # These checks are deliberately ROM-free. They keep the strict
+        # S0-S14 manifest, capture comparator, and cumulative requested-address
+        # union contracts active in CI without introducing private inputs.
+        run: |
+          PYTHONPATH=tools/ra python3 -c \
+            'from compare_tmc_ra_capture import load_manifest; states = load_manifest(); assert [state["id"] for state in states] == [f"S{i}" for i in range(15)]; print("S0-S14 manifest self-test: PASS")'
+          python3 tools/ra/validate_ra_manifest.py --self-test
+          python3 tools/ra/validate_ra_manifest.py
+          python3 tools/ra/generate_tmc_memory_map.py --check
+          python3 tools/ra/compare_tmc_ra_snapshot.py --self-test
+          python3 tools/ra/merge_tmc_ra_requested.py --self-test
+          python3 -m unittest -v \
+            tools/ra/tests/test_compare_tmc_ra_snapshot.py \
+            tools/ra/tests/test_compare_tmc_ra_capture.py \
+            tools/ra/tests/test_merge_tmc_ra_requested.py
+
       - name: Resolve MinGW POSIX path (Windows)
         if: matrix.os_name == 'windows'
         shell: bash
@@ -567,6 +588,26 @@ jobs:
           xmake build -y debug_actions_test
           ./build/pc/debug_actions_test
 
+      - name: Build and run RA badge gate test (Linux x86_64)
+        if: matrix.os_name == 'linux' && matrix.arch == 'x86_64'
+        shell: bash
+        # Exercises the detach-versus-late-badge callback boundary without
+        # requiring a ROM, Android device, or authenticated RA session.
+        run: |
+          xmake build -y tmc_ra_badge_gate_test
+          ./build/pc/tmc_ra_badge_gate_test
+
+      - name: Build and run RA capture contract test (Linux x86_64)
+        if: matrix.os_name == 'linux' && matrix.arch == 'x86_64'
+        shell: bash
+        # ROM-free native capture-contract test under the established
+        # debug + ASan/UBSan configuration; no private inputs are required.
+        run: |
+          xmake f -y --mode=debug --pc_sanitize=y --pc_tsan=n \
+            --enable_retroachievements=y --game_version=USA
+          xmake build -r -y tmc_ra_capture_contract_test
+          ./build/pc/tmc_ra_capture_contract_test
+
       - name: Smoke test tmc_pc headless (Linux)
         if: matrix.os_name == 'linux'
         shell: bash
@@ -716,15 +757,16 @@ jobs:
           xmake f -y -o build/abi-check --pc_lto_type_check=y
           xmake build -r -y tmc_pc
 
-  # Android APK. xmake cross-compiles libmain.so per ABI (arm64-v8a for
-  # real devices, x86_64 for Waydroid/ChromeOS/emulators); Gradle only
-  # packages the two libs — no externalNativeBuild, jniLibs points at
-  # build/android/ (see android/app/build.gradle). Same slim model as the
-  # desktop legs: CI has no ROM, the APK self-extracts assets on device
-  # from the user's baserom.gba. Runs under os_filter "all" (pushes/PRs
-  # compile-guard the NDK build) or "android".
+  # Android APKs. xmake cross-compiles the vanilla and RA libmain.so per ABI
+  # (arm64-v8a for real devices, x86_64 for Waydroid/ChromeOS/emulators);
+  # Gradle packages each native configuration with its matching build type —
+  # no externalNativeBuild, jniLibs points at build/android/ (see
+  # android/app/build.gradle). Same slim model as the desktop legs: CI has no
+  # ROM, the APK self-extracts assets on device from the user's baserom.gba.
+  # Runs under os_filter "all" (pushes/PRs compile-guard the NDK build) or
+  # "android".
   build-android:
-    name: Build multi on android (arm64-v8a + x86_64 APK)
+    name: Build vanilla + RA on android (arm64-v8a + x86_64 APKs)
     if: inputs.os_filter == 'all' || inputs.os_filter == 'android' || inputs.os_filter == ''
     runs-on: ubuntu-latest
     steps:
@@ -790,15 +832,16 @@ jobs:
           "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" --install "ndk;26.3.11579264"
           echo "TMC_NDK=$ANDROID_SDK_ROOT/ndk/26.3.11579264" >> "$GITHUB_ENV"
 
-      - name: Build libmain.so (arm64-v8a + x86_64)
+      - name: Build vanilla libmain.so (arm64-v8a + x86_64)
         shell: bash
         run: |
           # Mirrors the local recipe: multi-region fat build (xmake default),
-          # 384px widescreen baseline — the on-device default. Each ABI drops
-          # its lib into build/android/<abi>/ where Gradle's jniLibs looks.
+          # 384px widescreen baseline — the on-device default. The vanilla
+          # native configuration is packaged by assembleRelease below.
           for abi in arm64-v8a x86_64; do
             xmake f -y -p android -a "$abi" --ndk="$TMC_NDK" \
-              --game_version=USA --widescreen_width=384
+              --game_version=USA --widescreen_width=384 \
+              --enable_retroachievements=n
             xmake build -y tmc_pc
             test -f "build/android/$abi/libmain.so"
           done
@@ -820,36 +863,106 @@ jobs:
           echo "TMC_KEYSTORE_FILE=$RUNNER_TEMP/tmc-release.keystore" >> "$GITHUB_ENV"
           echo "TMC_KEYSTORE_PASSWORD=$KS_PASS" >> "$GITHUB_ENV"
 
-      - name: Build release APK
+      - name: Build vanilla release APK
         shell: bash
         run: |
           cd android
           export JAVA_HOME="$JAVA_HOME_17_X64"
           ./gradlew --no-daemon :app:assembleRelease
 
-      - name: Verify APK (signature + both ABIs)
+      - name: Build RA libmain.so (arm64-v8a + x86_64)
         shell: bash
         run: |
-          APK=android/app/build/outputs/apk/release/app-release.apk
-          test -f "$APK"
-          BT=$(ls -d "$ANDROID_SDK_ROOT"/build-tools/* | sort -V | tail -1)
-          "$BT/apksigner" verify --print-certs "$APK"
-          unzip -l "$APK" | grep -q 'lib/arm64-v8a/libmain.so'
-          unzip -l "$APK" | grep -q 'lib/x86_64/libmain.so'
-          echo "OK: APK signed and carries both ABIs."
+          # Reconfigure the same ABI outputs for the RA native build before
+          # Gradle packages them with the separate .ra application id.
+          for abi in arm64-v8a x86_64; do
+            xmake f -y -p android -a "$abi" --ndk="$TMC_NDK" \
+              --game_version=USA --widescreen_width=384 \
+              --enable_retroachievements=y
+            xmake build -y tmc_pc
+            test -f "build/android/$abi/libmain.so"
+          done
 
-      - name: Name APK artifact
+      - name: Build RA APK
+        shell: bash
+        run: |
+          cd android
+          export JAVA_HOME="$JAVA_HOME_17_X64"
+          ./gradlew --no-daemon :app:assembleRa
+
+      - name: Run RA Java unit tests
+        shell: bash
+        run: |
+          cd android
+          export JAVA_HOME="$JAVA_HOME_17_X64"
+          ./gradlew --no-daemon :app:testDebugUnitTest
+
+      - name: Verify APKs (signatures, package ids + both ABIs)
+        shell: bash
+        run: |
+          BT=$(ls -d "$ANDROID_SDK_ROOT"/build-tools/* | sort -V | tail -1)
+          verify_apk() {
+            local apk="$1"
+            local expected_package="$2"
+            test -f "$apk"
+            "$BT/apksigner" verify --print-certs "$apk"
+            "$BT/aapt" dump badging "$apk" |
+              grep -q "package: name='$expected_package'"
+            unzip -l "$apk" | grep -q 'lib/arm64-v8a/libmain.so'
+            unzip -l "$apk" | grep -q 'lib/x86_64/libmain.so'
+          }
+          verify_apk \
+            android/app/build/outputs/apk/release/app-release.apk \
+            dev.picori.tmc
+          verify_apk \
+            android/app/build/outputs/apk/ra/app-ra.apk \
+            dev.picori.tmc.ra
+          echo "OK: vanilla and RA APKs are signed, have the expected package ids, and carry both ABIs."
+
+      - name: Verify RA-only manifest permissions and backup policy
+        shell: bash
+        run: |
+          set -euo pipefail
+          vanilla_manifest=android/app/build/intermediates/merged_manifests/release/processReleaseManifest/AndroidManifest.xml
+          ra_manifest=android/app/build/intermediates/merged_manifests/ra/processRaManifest/AndroidManifest.xml
+          test -f "$vanilla_manifest"
+          test -f "$ra_manifest"
+
+          for marker in \
+            'android.permission.INTERNET' \
+            'networkSecurityConfig=' \
+            'fullBackupContent=' \
+            'dataExtractionRules=' \
+            'usesCleartextTraffic='; do
+            ! grep -q "$marker" "$vanilla_manifest"
+            grep -q "$marker" "$ra_manifest"
+          done
+          ! grep -q 'android:allowBackup=' "$vanilla_manifest"
+          grep -q 'android:allowBackup=' "$ra_manifest"
+          echo "OK: vanilla has no RA network/backup declarations; RA has the complete policy."
+
+      - name: Name APK artifacts
         shell: bash
         env:
           VERSION_LABEL: ${{ inputs.version_label }}
         run: |
-          APK_NAME="tmc-multi-android-${VERSION_LABEL}.apk"
-          cp android/app/build/outputs/apk/release/app-release.apk "$APK_NAME"
-          echo "apk_name=$APK_NAME" >> "$GITHUB_ENV"
+          VANILLA_APK_NAME="tmc-vanilla-android-${VERSION_LABEL}.apk"
+          RA_APK_NAME="tmc-ra-android-${VERSION_LABEL}.apk"
+          cp android/app/build/outputs/apk/release/app-release.apk "$VANILLA_APK_NAME"
+          cp android/app/build/outputs/apk/ra/app-ra.apk "$RA_APK_NAME"
+          echo "vanilla_apk_name=$VANILLA_APK_NAME" >> "$GITHUB_ENV"
+          echo "ra_apk_name=$RA_APK_NAME" >> "$GITHUB_ENV"
 
-      - name: Upload artifact
+      - name: Upload vanilla APK artifact
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: ${{ env.apk_name }}
-          path: ${{ env.apk_name }}
+          name: ${{ env.vanilla_apk_name }}
+          path: ${{ env.vanilla_apk_name }}
+          if-no-files-found: error
+
+      - name: Upload RA APK artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: ${{ env.ra_apk_name }}
+          path: ${{ env.ra_apk_name }}
           if-no-files-found: error

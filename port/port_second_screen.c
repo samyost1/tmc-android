@@ -55,6 +55,11 @@
 
 #include "port_runtime_config.h"
 #include "port_widescreen.h" /* PORT_VIEW_WIDTH: whether this build has a wide path at all */
+#ifdef TMC_ENABLE_RETROACHIEVEMENTS
+#include "tmc_ra_badge_cache.h"
+#include "tmc_ra_toast_presentation.h"
+#include "tmc_ra_ui_bridge.h"
+#endif
 
 #include <math.h>
 #include <stdbool.h>
@@ -120,7 +125,15 @@ static const int8_t kDungeonTopFloor[7] = { 2, 3, 3, 5, 2, 7, 5 };
 /*  UI state shared with the tap handler                               */
 /* ------------------------------------------------------------------ */
 
-enum { SS_TAB_MAP = 0, SS_TAB_ITEMS, SS_TAB_QUEST, SS_TAB_SETTINGS };
+enum {
+    SS_TAB_MAP = 0,
+    SS_TAB_ITEMS,
+    SS_TAB_QUEST,
+    SS_TAB_SETTINGS,
+#ifdef TMC_ENABLE_RETROACHIEVEMENTS
+    SS_TAB_RA,
+#endif
+};
 
 /* What a tap target does when hit. arg meaning per action: item id,
  * tab id, ring (1 = A, 2 = B), plaque display-floor index, settings row.
@@ -137,6 +150,9 @@ enum {
     SS_ACT_MAPVIEW,
     SS_ACT_MAPZOOM,
     SS_ACT_QUESTVIEW, /* arg: which quest screen to show */
+#ifdef TMC_ENABLE_RETROACHIEVEMENTS
+    SS_ACT_RA_COMMAND, /* arg: TmcRaUiCommandKind */
+#endif
 };
 
 /* Settings rows, top to bottom. The second-screen-only toggles persist
@@ -252,6 +268,10 @@ static struct {
     uint8_t questView;
 } sUi = { .floorPreview = SS_NO_FLOOR, .playerFloorDisp = SS_NO_FLOOR };
 
+#ifdef TMC_ENABLE_RETROACHIEVEMENTS
+static TmcRaToastPresentation sRaToast;
+#endif
+
 /* sUi.questView */
 enum { SS_QUEST_MAIN = 0, SS_QUEST_KINSTONES, SS_QUEST_TECHNIQUES };
 
@@ -353,6 +373,72 @@ static void BlitSprite(const SSurf* s, const SecondScreenThemeSprite* spr, int32
         }
     }
 }
+
+#ifdef TMC_ENABLE_RETROACHIEVEMENTS
+static uint32_t BlendBadgePixel(uint32_t source, uint32_t destination) {
+    uint32_t alpha = source >> 24;
+    uint32_t inverse;
+    uint32_t r;
+    uint32_t g;
+    uint32_t b;
+
+    if (alpha == 0)
+        return destination;
+    if (alpha == 255)
+        return source;
+    inverse = 255 - alpha;
+    r = (((source & 0xffu) * alpha) + ((destination & 0xffu) * inverse)) / 255u;
+    g = ((((source >> 8) & 0xffu) * alpha) + (((destination >> 8) & 0xffu) * inverse)) / 255u;
+    b = ((((source >> 16) & 0xffu) * alpha) + (((destination >> 16) & 0xffu) * inverse)) / 255u;
+    return 0xff000000u | r | (g << 8) | (b << 16);
+}
+
+static bool DrawRaBadgeImage(const SSurf* s, float x, float y, float size, const char* badgeUrl) {
+    TmcRaBadgeImage image;
+    int32_t target;
+    int32_t drawW;
+    int32_t drawH;
+    int32_t offsetX;
+    int32_t offsetY;
+    int32_t dy;
+
+    if (badgeUrl == NULL || badgeUrl[0] == '\0' ||
+        !TmcRaBadgeCache_Copy(badgeUrl, &image))
+        return false;
+    target = (int32_t)(size + 0.5f);
+    if (target < 1)
+        return false;
+    if (image.width >= image.height) {
+        drawW = target;
+        drawH = target * image.height / image.width;
+    } else {
+        drawH = target;
+        drawW = target * image.width / image.height;
+    }
+    if (drawW < 1) drawW = 1;
+    if (drawH < 1) drawH = 1;
+    offsetX = (target - drawW) / 2;
+    offsetY = (target - drawH) / 2;
+    for (dy = 0; dy < drawH; ++dy) {
+        const int sourceY = dy * image.height / drawH;
+        int32_t dx;
+        for (dx = 0; dx < drawW; ++dx) {
+            const int sourceX = dx * image.width / drawW;
+            const int32_t destinationX = (int32_t)x + offsetX + dx;
+            const int32_t destinationY = (int32_t)y + offsetY + dy;
+            uint32_t* row;
+
+            if (destinationX < 0 || destinationX >= s->w ||
+                destinationY < 0 || destinationY >= s->h)
+                continue;
+            row = s->px + (size_t)destinationY * (size_t)s->stride;
+            row[destinationX] = BlendBadgePixel(image.pixels[sourceY * image.width + sourceX],
+                                                 row[destinationX]);
+        }
+    }
+    return true;
+}
+#endif
 
 /* Chunky filled diamond (the four-element motif); r is the half-height. */
 static void FillDiamond(const SSurf* s, int32_t cx, int32_t cy, int32_t r, uint32_t color) {
@@ -1696,6 +1782,223 @@ static void PaintQuestPanel(const SSurf* s, const SecondScreenSnapshot* snap, Ta
 }
 
 /* ------------------------------------------------------------------ */
+/*  RetroAchievements panel                                           */
+/* ------------------------------------------------------------------ */
+
+#ifdef TMC_ENABLE_RETROACHIEVEMENTS
+
+static const char* RaModeWord(void) {
+    return "CASUAL";
+}
+
+static const char* RaConnectionWord(NRA_UIConnection connection) {
+    switch (connection) {
+        case NRA_UI_CONNECTION_ONLINE:
+            return "ONLINE";
+        case NRA_UI_CONNECTION_OFFLINE:
+            return "OFFLINE";
+        case NRA_UI_CONNECTION_UNKNOWN:
+        default:
+            return "UNKNOWN";
+    }
+}
+
+static void RaCopyText(char* out, size_t capacity, const char* text, const char* fallback) {
+    if (capacity == 0)
+        return;
+    if (text == NULL || text[0] == '\0')
+        text = fallback;
+    snprintf(out, capacity, "%s", text != NULL ? text : "");
+}
+
+static void DrawRaBadge(const SSurf* s, float x, float y, float size, const char* badgeKey,
+                        const char* badgeUrl, float u) {
+    char shortKey[7];
+    int32_t ms = (int32_t)(1.2f * u);
+
+    if (ms < 1)
+        ms = 1;
+    FillRoundRect(s, x, y, x + size, y + size, 8 * u,
+                  Port_SecondScreenTheme_Color(SSC_BANNER_NAVY));
+    if (DrawRaBadgeImage(s, x, y, size, badgeUrl))
+        return;
+    snprintf(shortKey, sizeof(shortKey), "%.6s", badgeKey != NULL ? badgeKey : "RA");
+    MenuTextCentered(s, shortKey, x + size / 2, y + size / 2, ms, SS_TEXT_WHITE);
+}
+
+static void PaintRaPanel(const SSurf* s, const NRA_UISnapshot* ui, TargetList* tl, float rx0, float ry0,
+                         float rx1, float ry1, float u, int32_t ts) {
+    float inset;
+    float ix0, iy0, ix1, iy1;
+    float infoY;
+    float listY;
+    float listBottom;
+    float rowH;
+    int32_t hms;
+    int32_t sms;
+    char account[24];
+    char game[24];
+    char presence[26];
+    char summary[64];
+    char mode[16];
+    char connection[16];
+    float chip[4];
+    float center;
+    float actionGap;
+    float actionChipHeight;
+    float loginWidth;
+    float casualWidth;
+    const char* loginLabel;
+    int32_t actionTextSize;
+    int stackActions;
+    int count;
+
+    Port_SecondScreenTheme_DrawPlate(s->px, s->w, s->h, s->stride, (int32_t)rx0, (int32_t)ry0,
+                                     (int32_t)(rx1 - rx0), (int32_t)(ry1 - ry0), ts);
+    inset = 12 * ts;
+    ix0 = rx0 + inset;
+    iy0 = ry0 + inset;
+    ix1 = rx1 - inset;
+    iy1 = ry1 - inset;
+
+    hms = (int32_t)(2.2f * u);
+    if (hms < 1)
+        hms = 1;
+    sms = (int32_t)(1.35f * u);
+    if (sms < 1)
+        sms = 1;
+    actionTextSize = (int32_t)(2.6f * u);
+    if (actionTextSize < 1)
+        actionTextSize = 1;
+    actionGap = 8 * u;
+    actionChipHeight = MENU_TEXT_BOX * actionTextSize + 22 * u;
+    loginLabel = ui->logged_in ? "LOGOUT" : "LOGIN";
+    loginWidth = MenuTextWidth(loginLabel, actionTextSize) + 52 * u;
+    casualWidth = MenuTextWidth("CASUAL", actionTextSize) + 52 * u;
+    stackActions = loginWidth + actionGap + casualWidth > ix1 - ix0;
+    DrawPanelHeaderChip(s, (rx0 + rx1) / 2.0f, iy0, "RA STATUS", hms, u);
+    infoY = iy0 + MENU_TEXT_BOX * hms + 30 * u;
+
+    Port_SecondScreenTheme_DrawWell(s->px, s->w, s->h, s->stride, (int32_t)ix0, (int32_t)infoY,
+                                    (int32_t)(ix1 - ix0), (int32_t)(126 * u), ts > 2 ? 2 : ts);
+    RaCopyText(account, sizeof(account), ui->logged_in ? ui->account_name : NULL, "NOT LOGGED IN");
+    RaCopyText(game, sizeof(game), ui->game_loaded ? ui->game_title : NULL,
+               ui->logged_in ? "WAITING FOR GAME" : "LOGIN REQUIRED");
+    RaCopyText(presence, sizeof(presence), ui->rich_presence, "No rich presence");
+    snprintf(mode, sizeof(mode), "%s", RaModeWord());
+    snprintf(connection, sizeof(connection), "%s", RaConnectionWord(ui->connection));
+    snprintf(summary, sizeof(summary), "%u/%u ACHIEVEMENTS  %u/%u POINTS", ui->achievements_unlocked,
+             ui->achievements_total, ui->achievement_points_unlocked, ui->achievement_points_total);
+
+    MenuTextDraw(s, "ACCOUNT", (int32_t)(ix0 + 18 * u), (int32_t)(infoY + 10 * u), sms, SS_TEXT_INK);
+    MenuTextDraw(s, account, (int32_t)(ix0 + 18 * u), (int32_t)(infoY + 30 * u), sms, SS_TEXT_NAVY);
+    MenuTextDraw(s, "MODE", (int32_t)(ix0 + (ix1 - ix0) * 0.36f), (int32_t)(infoY + 10 * u), sms,
+                 SS_TEXT_INK);
+    MenuTextDraw(s, mode, (int32_t)(ix0 + (ix1 - ix0) * 0.36f), (int32_t)(infoY + 30 * u), sms,
+                 SS_TEXT_NAVY);
+    MenuTextDraw(s, connection, (int32_t)(ix1 - 118 * u), (int32_t)(infoY + 10 * u), sms,
+                 ui->connection == NRA_UI_CONNECTION_ONLINE ? SS_TEXT_GREEN : SS_TEXT_RED);
+    MenuTextDraw(s, game, (int32_t)(ix0 + 18 * u), (int32_t)(infoY + 54 * u), sms, SS_TEXT_INK);
+    MenuTextDraw(s, presence, (int32_t)(ix0 + 18 * u), (int32_t)(infoY + 78 * u), sms, SS_TEXT_NAVY);
+    MenuTextDraw(s, summary, (int32_t)(ix0 + 18 * u), (int32_t)(infoY + 102 * u), sms, SS_TEXT_INK);
+
+    listY = infoY + 138 * u;
+    listBottom = iy1 - actionChipHeight - 12 * u;
+    if (stackActions)
+        listBottom -= actionChipHeight + actionGap;
+    rowH = (listBottom - listY - 12 * u) / 4.0f;
+    if (rowH > 94 * u)
+        rowH = 94 * u;
+    if (rowH < 34 * u)
+        rowH = 34 * u;
+    count = (int)ui->achievement_count;
+    if (count > 4)
+        count = 4;
+    if (count == 0) {
+        Port_SecondScreenTheme_DrawWell(s->px, s->w, s->h, s->stride, (int32_t)ix0, (int32_t)listY,
+                                        (int32_t)(ix1 - ix0), (int32_t)(listBottom - listY), ts > 2 ? 2 : ts);
+        MenuTextCentered(s, ui->game_loaded ? "NO ACHIEVEMENTS" : "NO SET LOADED",
+                         (ix0 + ix1) / 2.0f, (listY + listBottom) / 2.0f, sms, SS_TEXT_INK);
+    } else {
+        for (int i = 0; i < count; i++) {
+            const NRA_UIAchievement* achievement = &ui->achievements[i];
+            float y = listY + i * (rowH + 4 * u);
+            float badge = rowH - 16 * u;
+            char title[24];
+            char progress[20];
+            int style = achievement->unlocked ? SS_TEXT_GREEN : SS_TEXT_INK;
+
+            Port_SecondScreenTheme_DrawWell(s->px, s->w, s->h, s->stride, (int32_t)ix0, (int32_t)y,
+                                            (int32_t)(ix1 - ix0), (int32_t)rowH, ts > 2 ? 2 : ts);
+            DrawRaBadge(s, ix0 + 10 * u, y + 8 * u, badge, achievement->badge_key,
+                        achievement->badge_url, u);
+            RaCopyText(title, sizeof(title), achievement->title, "UNTITLED");
+            RaCopyText(progress, sizeof(progress), achievement->unlocked ? "UNLOCKED"
+                                                                           : achievement->measured_progress,
+                        "LOCKED");
+            MenuTextDraw(s, title, (int32_t)(ix0 + badge + 24 * u), (int32_t)(y + 10 * u), sms, style);
+            MenuTextDraw(s, progress, (int32_t)(ix0 + badge + 24 * u), (int32_t)(y + rowH - 28 * u), sms,
+                         achievement->unlocked ? SS_TEXT_GREEN : SS_TEXT_INK);
+            {
+                char points[12];
+                snprintf(points, sizeof(points), "%u P", achievement->points);
+                MenuTextDraw(s, points, (int32_t)(ix1 - 76 * u), (int32_t)(y + rowH / 2 - 8 * sms), sms,
+                             SS_TEXT_NAVY);
+            }
+        }
+    }
+
+    center = (rx0 + rx1) / 2.0f;
+    if (stackActions) {
+        float actionBottom = ry1 - 12 * u;
+        DrawMapChip(s, "CASUAL", center, actionBottom, u, chip);
+        DrawMapChip(s, loginLabel, center, actionBottom - actionChipHeight - actionGap, u, chip);
+        if (ui->available) {
+            AddTarget(tl, chip[0], chip[1], chip[2], chip[3], SS_ACT_RA_COMMAND,
+                      ui->logged_in ? TMC_RA_UI_COMMAND_LOGOUT
+                                    : TMC_RA_UI_COMMAND_REQUEST_PASSWORD_LOGIN);
+        }
+    } else {
+        float totalWidth = loginWidth + actionGap + casualWidth;
+        float left = center - totalWidth / 2.0f;
+        DrawMapChip(s, loginLabel, left + loginWidth / 2.0f, ry1 - 12 * u, u, chip);
+        if (ui->available) {
+            AddTarget(tl, chip[0], chip[1], chip[2], chip[3], SS_ACT_RA_COMMAND,
+                      ui->logged_in ? TMC_RA_UI_COMMAND_LOGOUT
+                                    : TMC_RA_UI_COMMAND_REQUEST_PASSWORD_LOGIN);
+        }
+        DrawMapChip(s, "CASUAL", left + loginWidth + actionGap + casualWidth / 2.0f,
+                    ry1 - 12 * u, u, chip);
+    }
+}
+
+static void PaintRaToast(const SSurf* s, const NRA_UIToast* toast, float u) {
+    float x0 = 16 * u;
+    float x1 = s->w - 16 * u;
+    float y0 = 14 * u;
+    float y1 = y0 + 62 * u;
+    int32_t ms = (int32_t)(1.45f * u);
+    char title[40];
+
+    if (ms < 1)
+        ms = 1;
+    RaCopyText(title, sizeof(title), toast->title, "RetroAchievements");
+    Port_SecondScreenTheme_DrawChip(s->px, s->w, s->h, s->stride, (int32_t)x0, (int32_t)y0,
+                                    (int32_t)(x1 - x0), (int32_t)(y1 - y0),
+                                    (int32_t)(y1 - y0) / 24, SS_CHIP_DARK);
+    DrawRaBadge(s, x0 + 10 * u, y0 + 9 * u, y1 - y0 - 18 * u, toast->badge_key,
+                toast->badge_url, u);
+    MenuTextDraw(s, title, (int32_t)(x0 + 82 * u), (int32_t)(y0 + 12 * u), ms, SS_TEXT_WHITE);
+    if (toast->points != 0) {
+        char points[16];
+        snprintf(points, sizeof(points), "+%u P", toast->points);
+        MenuTextDraw(s, points, (int32_t)(x1 - 82 * u), (int32_t)(y0 + 12 * u), ms, SS_TEXT_GREEN);
+    }
+}
+
+#endif /* TMC_ENABLE_RETROACHIEVEMENTS */
+
+/* ------------------------------------------------------------------ */
 /*  Settings panel                                                     */
 /* ------------------------------------------------------------------ */
 
@@ -2165,9 +2468,9 @@ static void DrawTabButton(const SSurf* s, TargetList* tl, float x0, float y0, fl
     AddTarget(tl, x0, y0, x1, y1, SS_ACT_TAB, (uint8_t)tabId);
 }
 
-/* Bottom tab bar: [QUEST][MAP][ITEMS] + the square settings button, all
- * one button family at one height. The 34u dead band underneath keeps
- * every button clear of the Android gesture zone (~30 real px). */
+/* Bottom tab bar: [QUEST][MAP][ITEMS] plus the RA tab in RA builds and the
+ * square settings button, all one button family at one height. The 34u dead
+ * band underneath keeps every button clear of the Android gesture zone. */
 static void PaintTabBar(const SSurf* s, TargetList* tl, float u, int32_t ts, int activeTab) {
     float tabH = 96 * u;
     float y = s->h - tabH + 4 * u;
@@ -2176,13 +2479,21 @@ static void PaintTabBar(const SSurf* s, TargetList* tl, float u, int32_t ts, int
     float sx1 = s->w - 8 * u;
     float sx0 = sx1 - sq;
     float x0 = 8 * u, xr = sx0 - 8 * u, gap = 8 * u;
-    float bw = (xr - x0 - 2 * gap) / 3.0f;
+    int tabCount = 3;
+#ifdef TMC_ENABLE_RETROACHIEVEMENTS
+    tabCount = 4;
+#endif
+    float bw = (xr - x0 - (tabCount - 1) * gap) / (float)tabCount;
 
     DrawTabButton(s, tl, x0, y, x0 + bw, y + bh, "QUEST", activeTab == SS_TAB_QUEST, SS_TAB_QUEST, u, ts);
     DrawTabButton(s, tl, x0 + bw + gap, y, x0 + 2 * bw + gap, y + bh, "MAP", activeTab == SS_TAB_MAP,
                   SS_TAB_MAP, u, ts);
     DrawTabButton(s, tl, x0 + 2 * (bw + gap), y, x0 + 3 * bw + 2 * gap, y + bh, "ITEMS",
                   activeTab == SS_TAB_ITEMS, SS_TAB_ITEMS, u, ts);
+#ifdef TMC_ENABLE_RETROACHIEVEMENTS
+    DrawTabButton(s, tl, x0 + 3 * (bw + gap), y, x0 + 4 * bw + 3 * gap, y + bh, "RA",
+                  activeTab == SS_TAB_RA, SS_TAB_RA, u, ts);
+#endif
     /* Settings keeps its cog glyph instead of a word, on the same plate —
      * an empty label, not a null one, so the art path never has to guess. */
     DrawTabButton(s, tl, sx0, y, sx1, y + bh, "", activeTab == SS_TAB_SETTINGS, SS_TAB_SETTINGS, u, ts);
@@ -2198,9 +2509,16 @@ static void PaintTabBar(const SSurf* s, TargetList* tl, float u, int32_t ts, int
 void Port_SecondScreen_PaintInto(uint32_t* pixels, int width, int height, int strideInPixels,
                                  const SecondScreenSnapshot* snap, uint32_t tick) {
     SSurf s = { pixels, width, height, strideInPixels };
+#ifdef TMC_ENABLE_RETROACHIEVEMENTS
+    NRA_UISnapshot raUi;
+#endif
     if (pixels == NULL || width <= 0 || height <= 0) {
         return;
     }
+#ifdef TMC_ENABLE_RETROACHIEVEMENTS
+    memset(&raUi, 0, sizeof(raUi));
+    (void)TmcRaUiBridge_Copy(&raUi);
+#endif
 
     if (!snap->inGame) {
         UI_LOCK();
@@ -2212,6 +2530,9 @@ void Port_SecondScreen_PaintInto(uint32_t* pixels, int width, int height, int st
         sUi.regionState = SS_REGION_OFF; /* a zoom never survives a load */
         sUi.questView = SS_QUEST_MAIN;   /* nor does an open list */
         UI_UNLOCK();
+#ifdef TMC_ENABLE_RETROACHIEVEMENTS
+        TmcRaToastPresentation_Reset(&sRaToast);
+#endif
         sLastFix.valid = 0; /* stale fixes must not survive into a new save */
         sCam.valid = 0;
         PaintCinema(&s, tick);
@@ -2256,6 +2577,9 @@ void Port_SecondScreen_PaintInto(uint32_t* pixels, int width, int height, int st
      * below reads it, so do the quest sub-screens (which draw their own
      * backdrop) and the two places that pick a color to sit on it. */
     Port_SecondScreenTheme_SetBackdropStyle(BackdropStyleCfg());
+#ifdef TMC_ENABLE_RETROACHIEVEMENTS
+    TmcRaToastPresentation_Update(&sRaToast, &raUi, (double)tick / 20.0);
+#endif
 
     /* The whole surface is the panel's backdrop; panels lay their
      * slab/chips over it. By default that is the pause menu's parchment
@@ -2285,6 +2609,10 @@ void Port_SecondScreen_PaintInto(uint32_t* pixels, int width, int height, int st
         PaintQuestPanel(&s, snap, &tl, mx0, my0, mx1, my1, u, ts, tick, questView);
     } else if (tab == SS_TAB_SETTINGS) {
         PaintSettingsPanel(&s, &tl, mx0, my0, mx1, my1, u, ts);
+#ifdef TMC_ENABLE_RETROACHIEVEMENTS
+    } else if (tab == SS_TAB_RA) {
+        PaintRaPanel(&s, &raUi, &tl, mx0, my0, mx1, my1, u, ts);
+#endif
     } else if (isDungeon) {
         PaintDungeon(&s, snap, &tl, mx0, my0, mx1, my1, u, ts, tick, returnCfg);
     } else {
@@ -2309,6 +2637,13 @@ void Port_SecondScreen_PaintInto(uint32_t* pixels, int width, int height, int st
     PaintSidebar(&s, snap, &tl, width - sideW + 4 * u, 10 * u, sideW - 14 * u, height - tabH - 14 * u, u,
                  ts, tick, armedRing);
     PaintTabBar(&s, &tl, u, ts, tab);
+#ifdef TMC_ENABLE_RETROACHIEVEMENTS
+    {
+        NRA_UIToast toast;
+        if (TmcRaToastPresentation_CopyVisible(&sRaToast, (double)tick / 20.0, &toast))
+            PaintRaToast(&s, &toast, u);
+    }
+#endif
 
     /* Publish this frame's hit boxes for the tap thread. */
     UI_LOCK();
@@ -2388,6 +2723,20 @@ void Port_SecondScreen_OnTap(int x, int y, int longPress) {
             sUi.questView = hit.arg;
             UI_UNLOCK();
             break;
+#ifdef TMC_ENABLE_RETROACHIEVEMENTS
+        case SS_ACT_RA_COMMAND: {
+            NRA_UISnapshot snapshot;
+            TmcRaUiCommand command;
+            if (!TmcRaUiBridge_Copy(&snapshot))
+                break;
+            memset(&command, 0, sizeof(command));
+            command.kind = (TmcRaUiCommandKind)hit.arg;
+            if (command.kind == TMC_RA_UI_COMMAND_REQUEST_MODE)
+                command.mode = NRA_MODE_LIVE_CASUAL;
+            (void)TmcRaUiBridge_EnqueueCommand(&command);
+            break;
+        }
+#endif
         case SS_ACT_RING:
             UI_LOCK();
             sUi.armedRing = (sUi.armedRing == hit.arg) ? 0 : hit.arg;
@@ -2535,6 +2884,7 @@ void Port_SecondScreen_OnTap(int x, int y, int longPress) {
 
 #ifdef __ANDROID__
 
+#include <android/log.h>
 #include <android/native_window.h>
 #include <time.h>
 
@@ -2569,6 +2919,7 @@ static void PaintFrame(ANativeWindow* window) {
 
 static void* RenderThreadMain(void* arg) {
     (void)arg;
+    __android_log_print(ANDROID_LOG_INFO, "SecondScreenNative", "render thread started");
     fprintf(stderr, "[second_screen] render thread started\n");
 
     for (;;) {
@@ -2602,6 +2953,7 @@ void Port_SecondScreen_Init(void) {
 
 void Port_SecondScreen_OnSurfaceReady(void* window, int width, int height) {
     ANativeWindow* nativeWindow = (ANativeWindow*)window;
+    __android_log_print(ANDROID_LOG_INFO, "SecondScreenNative", "surface ready %dx%d", width, height);
     fprintf(stderr, "[second_screen] surface ready %dx%d\n", width, height);
 
     pthread_mutex_lock(&sWindowMutex);
@@ -2621,6 +2973,7 @@ void Port_SecondScreen_OnSurfaceLost(void) {
         sWindow = NULL;
     }
     pthread_mutex_unlock(&sWindowMutex);
+    __android_log_print(ANDROID_LOG_INFO, "SecondScreenNative", "surface lost");
     fprintf(stderr, "[second_screen] surface lost\n");
 }
 

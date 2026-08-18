@@ -51,6 +51,10 @@
 #include "port_gba_mem.h"
 #include "port_runtime_config.h"
 #include "region.h" /* REGION_IS_EU/JP — per-region savestate isolation (#21) */
+#ifdef TMC_ENABLE_RETROACHIEVEMENTS
+#include "tmc_ra_runtime.h"
+#include "tmc_ra_state.h"
+#endif
 
 extern u8 gEwram[];
 extern u8 gIwram[];
@@ -105,7 +109,7 @@ static StateRegion sRegions[] = {
 #define NUM_AUTO_SLOTS 3
 #define MAGIC 0x53434D54u /* "TMCS" little-endian */
 #define VERSION                                         \
-    6u /* v2: header carries gEntities base address for \
+    7u /* v2: header carries gEntities base address for \
         * cross-process pointer-fixup on restore.       \
         * v3: gRand added to region list so RNG         \
         * state round-trips (GBA had it in IWRAM).      \
@@ -115,7 +119,12 @@ static StateRegion sRegions[] = {
         * into a JP session contaminates tmc_jp.sav     \
         * (#21); cross-region loads are refused.        \
         * v6: entity subclass layouts changed; older    \
-        * snapshots are rejected. */
+        * snapshots are rejected.                        \
+        * v7: optional versioned CRC-protected native RA \
+        * progress block follows the game snapshot. */
+
+#define RA_STATE_HEADER_BYTES 20u
+#define MAX_RA_STATE_BLOCK_BYTES (RA_STATE_HEADER_BYTES + 1024u * 1024u)
 
 typedef struct {
     u8* snapshot; /* heap, NULL if slot empty */
@@ -123,6 +132,8 @@ typedef struct {
     int valid;
     u64 saved_at_unix;       /* clock_gettime CLOCK_REALTIME seconds */
     u64 saved_entities_base; /* gEntities address at save time; 0 for in-RAM slots */
+    u8* ra_state;             /* optional versioned native RA progress block */
+    size_t ra_state_bytes;
 } Slot;
 
 static Slot sSlots[NUM_SLOTS];
@@ -149,8 +160,90 @@ static size_t TotalRegionBytes(void) {
     return total;
 }
 
+static void ClearRaState(Slot* s) {
+    if (s == NULL)
+        return;
+    free(s->ra_state);
+    s->ra_state = NULL;
+    s->ra_state_bytes = 0;
+}
+
+#ifdef TMC_ENABLE_RETROACHIEVEMENTS
+static int CaptureRaState(Slot* s) {
+    NRA_StatusSnapshot status = {0};
+    uint8_t* progress = NULL;
+    uint8_t* block = NULL;
+    size_t progress_size;
+    size_t serialized_size = 0;
+    size_t block_size;
+    bool required;
+
+    if (!TmcRaRuntime_IsInitialized(&gTmcRaRuntime) ||
+        !nra_copy_status_snapshot(gTmcRaRuntime.context, &status)) {
+        ClearRaState(s);
+        return 1;
+    }
+    required = status.game_loaded && status.mode == NRA_MODE_LIVE_CASUAL;
+    if (!status.game_loaded) {
+        ClearRaState(s);
+        return 1;
+    }
+    progress_size = nra_progress_size(gTmcRaRuntime.context);
+    if (progress_size == 0)
+        return required ? 0 : (ClearRaState(s), 1);
+    progress = (uint8_t*)malloc(progress_size);
+    if (progress == NULL ||
+        nra_serialize_progress(gTmcRaRuntime.context, progress, progress_size, &serialized_size) != NRA_OK ||
+        serialized_size != progress_size) {
+        goto fail;
+    }
+    block_size = TmcRaState_BlockSize(progress_size);
+    if (block_size == 0 || block_size > MAX_RA_STATE_BLOCK_BYTES) {
+        goto fail;
+    }
+    block = (uint8_t*)malloc(block_size);
+    if (block == NULL || !TmcRaState_Encode(block, block_size, progress, progress_size))
+        goto fail;
+    ClearRaState(s);
+    s->ra_state = block;
+    s->ra_state_bytes = block_size;
+    memset(progress, 0, progress_size);
+    free(progress);
+    return 1;
+
+fail:
+    if (progress != NULL) {
+        memset(progress, 0, progress_size);
+        free(progress);
+    }
+    free(block);
+    ClearRaState(s);
+    return 0;
+}
+
+static int RestoreRaState(const Slot* s) {
+    NRA_StatusSnapshot status = {0};
+    const uint8_t* progress = NULL;
+    size_t progress_size = 0;
+    bool required = false;
+
+    if (!TmcRaRuntime_IsInitialized(&gTmcRaRuntime) ||
+        !nra_copy_status_snapshot(gTmcRaRuntime.context, &status)) {
+        return s->ra_state_bytes == 0;
+    }
+    required = status.game_loaded && status.mode == NRA_MODE_LIVE_CASUAL;
+    if (s->ra_state_bytes == 0)
+        return required ? 0 : 1;
+    if (!status.game_loaded || s->ra_state == NULL || s->ra_state_bytes > MAX_RA_STATE_BLOCK_BYTES ||
+        TmcRaState_Decode(s->ra_state, s->ra_state_bytes, &progress, &progress_size) != TMC_RA_STATE_VALID)
+        return 0;
+    return nra_deserialize_progress(gTmcRaRuntime.context, progress, progress_size) == NRA_OK;
+}
+#endif
+
 static int Snapshot_Capture(Slot* s) {
     const size_t total = TotalRegionBytes();
+    s->valid = 0;
     if (s->snapshot == NULL || s->bytes != total) {
         free(s->snapshot);
         s->snapshot = (u8*)malloc(total);
@@ -167,6 +260,12 @@ static int Snapshot_Capture(Slot* s) {
         memcpy(dst, sRegions[i].ptr, sRegions[i].size);
         dst += sRegions[i].size;
     }
+#ifdef TMC_ENABLE_RETROACHIEVEMENTS
+    if (!CaptureRaState(s))
+        return 0;
+#else
+    ClearRaState(s);
+#endif
     s->valid = 1;
     s->saved_at_unix = (u64)time(NULL);
     return 1;
@@ -246,6 +345,13 @@ static int Snapshot_Restore(const Slot* s) {
     if (!s->valid || s->snapshot == NULL || s->bytes != TotalRegionBytes()) {
         return 0;
     }
+#ifdef TMC_ENABLE_RETROACHIEVEMENTS
+    /* Validate and restore the native progress block before touching the
+     * game regions. Casual mode therefore cannot partially restore a state
+     * when its RA progress is absent or corrupt. */
+    if (!RestoreRaState(s))
+        return 0;
+#endif
     const u8* src = s->snapshot;
     for (size_t i = 0; i < NUM_REGIONS; i++) {
         memcpy(sRegions[i].ptr, src, sRegions[i].size);
@@ -412,20 +518,34 @@ static int WriteSlotToDisk(int slot) {
      * memory. */
     const u64 entities_base = (u64)(uintptr_t)gEntities;
     const u32 region_tag = ActiveRegionTag();
+    const u32 ra_state_bytes = (u32)s->ra_state_bytes;
+    if (s->ra_state_bytes > MAX_RA_STATE_BLOCK_BYTES ||
+        (s->ra_state_bytes != 0 && s->ra_state == NULL)) {
+        fclose(f);
+        return 0;
+    }
     if (fwrite(&magic, sizeof(magic), 1, f) != 1 || fwrite(&version, sizeof(version), 1, f) != 1 ||
         fwrite(&total, sizeof(total), 1, f) != 1 || fwrite(&saved_at, sizeof(saved_at), 1, f) != 1 ||
         fwrite(&entities_base, sizeof(entities_base), 1, f) != 1 ||
-        fwrite(&region_tag, sizeof(region_tag), 1, f) != 1) {
+        fwrite(&region_tag, sizeof(region_tag), 1, f) != 1 ||
+        fwrite(&ra_state_bytes, sizeof(ra_state_bytes), 1, f) != 1) {
         fprintf(stderr, "[quicksave] header write failed for %s\n", path);
         fclose(f);
         return 0;
     }
     const size_t written = fwrite(s->snapshot, 1, s->bytes, f);
-    fclose(f);
     if (written != s->bytes) {
         fprintf(stderr, "[quicksave] short write %s (%zu/%zu)\n", path, written, s->bytes);
+        fclose(f);
         return 0;
     }
+    if (s->ra_state_bytes != 0 &&
+        fwrite(s->ra_state, 1, s->ra_state_bytes, f) != s->ra_state_bytes) {
+        fprintf(stderr, "[quicksave] short RA-state write %s\n", path);
+        fclose(f);
+        return 0;
+    }
+    fclose(f);
     return 1;
 }
 
@@ -446,6 +566,7 @@ static int ReadSlotFromDisk(int slot) {
     if (!f)
         return 0;
     u32 magic = 0, version = 0, total = 0;
+    u32 ra_state_bytes = 0;
     u64 saved_at = 0;
     u64 saved_entities_base = 0;
     if (!ReadSlotHeader(f, &magic, &version, &total, &saved_at)) {
@@ -476,6 +597,13 @@ static int ReadSlotFromDisk(int slot) {
             return 0;
         }
     }
+    if (fread(&ra_state_bytes, sizeof(ra_state_bytes), 1, f) != 1 ||
+        ra_state_bytes > MAX_RA_STATE_BLOCK_BYTES ||
+        (ra_state_bytes != 0 && ra_state_bytes < RA_STATE_HEADER_BYTES)) {
+        fprintf(stderr, "[quicksave] invalid RA-state header on %s, ignoring slot file\n", path);
+        fclose(f);
+        return 0;
+    }
     Slot* s = &sSlots[slot];
     if (s->snapshot == NULL || s->bytes != total) {
         free(s->snapshot);
@@ -489,12 +617,27 @@ static int ReadSlotFromDisk(int slot) {
         s->bytes = total;
     }
     const size_t got = fread(s->snapshot, 1, total, f);
-    fclose(f);
     if (got != total) {
         fprintf(stderr, "[quicksave] short read on %s (%zu/%u bytes), ignoring slot file\n", path, got, total);
+        fclose(f);
         s->valid = 0;
         return 0;
     }
+    u8* loaded_ra_state = NULL;
+    if (ra_state_bytes != 0) {
+        loaded_ra_state = (u8*)malloc(ra_state_bytes);
+        if (loaded_ra_state == NULL ||
+            fread(loaded_ra_state, 1, ra_state_bytes, f) != ra_state_bytes) {
+            free(loaded_ra_state);
+            fclose(f);
+            s->valid = 0;
+            return 0;
+        }
+    }
+    fclose(f);
+    ClearRaState(s);
+    s->ra_state = loaded_ra_state;
+    s->ra_state_bytes = ra_state_bytes;
     s->valid = 1;
     s->saved_at_unix = saved_at;
     s->saved_entities_base = saved_entities_base;
@@ -506,6 +649,10 @@ static int ReadSlotFromDisk(int slot) {
  * ============================================================ */
 
 int Port_QuickSave_SaveSlot(int slot) {
+#ifdef TMC_ENABLE_RETROACHIEVEMENTS
+    if (!TmcRaRuntime_CanRestoreSaveState(&gTmcRaRuntime))
+        return 0;
+#endif
     if (slot < 0 || slot >= NUM_SLOTS)
         return 0;
     if (!Snapshot_Capture(&sSlots[slot]))
@@ -518,6 +665,10 @@ int Port_QuickSave_SaveSlot(int slot) {
 }
 
 int Port_QuickSave_LoadSlot(int slot) {
+#ifdef TMC_ENABLE_RETROACHIEVEMENTS
+    if (!TmcRaRuntime_CanRestoreSaveState(&gTmcRaRuntime))
+        return 0;
+#endif
     /* Refuse any state restore under Console-Parity — covers the menu/imgui
      * load buttons too, not just the F-key hotkeys. */
     if (Port_Config_GetConsoleParity())
@@ -571,6 +722,10 @@ int Port_QuickSave_HasSlot(int slot) {
 static Slot sPracticeSlot;
 
 int Port_QuickSave_SavePractice(void) {
+#ifdef TMC_ENABLE_RETROACHIEVEMENTS
+    if (!TmcRaRuntime_CanUsePracticeControls(&gTmcRaRuntime))
+        return 0;
+#endif
     if (!Snapshot_Capture(&sPracticeSlot))
         return 0;
     fprintf(stderr, "[quicksave] practice point set (%zu bytes)\n", sPracticeSlot.bytes);
@@ -578,6 +733,10 @@ int Port_QuickSave_SavePractice(void) {
 }
 
 int Port_QuickSave_LoadPractice(void) {
+#ifdef TMC_ENABLE_RETROACHIEVEMENTS
+    if (!TmcRaRuntime_CanUsePracticeControls(&gTmcRaRuntime))
+        return 0;
+#endif
     if (Port_Config_GetConsoleParity())
         return 0;
     if (!sPracticeSlot.valid) {

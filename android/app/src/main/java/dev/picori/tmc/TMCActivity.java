@@ -1,5 +1,6 @@
 package dev.picori.tmc;
 
+import android.content.Intent;
 import android.os.Bundle;
 import android.view.View;
 import android.view.Window;
@@ -14,6 +15,11 @@ import org.libsdl.app.SDLActivity;
  * Java-side glue binds to the JNI_OnLoad exported from the static SDL inside.
  */
 public class TMCActivity extends SDLActivity {
+    // RA build usage; keep this an explicit component intent, not a manifest action filter:
+    // adb shell am start -n dev.picori.tmc.ra/dev.picori.tmc.TMCActivity -a dev.picori.tmc.action.RA_CAPTURE --es dev.picori.tmc.extra.RA_STATE S0
+    public static final String ACTION_RA_CAPTURE = "dev.picori.tmc.action.RA_CAPTURE";
+    public static final String EXTRA_RA_STATE = "dev.picori.tmc.extra.RA_STATE";
+
     // Same set the second-screen panel uses (see SecondScreenPresentation) and
     // the same set SDL's own glue would apply — kept here so the game window
     // never depends on SDL having dispatched COMMAND_CHANGE_WINDOW_STYLE.
@@ -26,6 +32,7 @@ public class TMCActivity extends SDLActivity {
             | View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION;
 
     private SecondScreenManager mSecondScreen;
+    private RAAndroidBridge mRetroAchievements;
 
     @Override
     protected String[] getLibraries() {
@@ -45,6 +52,24 @@ public class TMCActivity extends SDLActivity {
         // the zelda3-android mod on the same hardware already do.
         applyImmersiveMode();
         mSecondScreen = new SecondScreenManager(this);
+        if (BuildConfig.RA_ENABLED) {
+            mRetroAchievements = RAAndroidBridge.attach(this);
+            handleCaptureIntent(getIntent());
+        }
+    }
+
+    @Override
+    protected void onNewIntent(Intent intent) {
+        super.onNewIntent(intent);
+        setIntent(intent);
+        handleCaptureIntent(intent);
+    }
+
+    private void handleCaptureIntent(Intent intent) {
+        if (BuildConfig.RA_ENABLED && mRetroAchievements != null && intent != null &&
+                ACTION_RA_CAPTURE.equals(intent.getAction())) {
+            mRetroAchievements.requestCapture(intent.getStringExtra(EXTRA_RA_STATE));
+        }
     }
 
     // The flags are dropped by the system every time the window loses focus
@@ -95,4 +120,14 @@ public class TMCActivity extends SDLActivity {
         mSecondScreen.stop();
         super.onStop();
     }
+
+    @Override
+    protected void onDestroy() {
+        if (mRetroAchievements != null) {
+            mRetroAchievements.detach();
+            mRetroAchievements = null;
+        }
+        super.onDestroy();
+    }
+
 }

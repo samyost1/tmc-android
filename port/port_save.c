@@ -38,6 +38,7 @@
  * Plus a small profile-management API consumed by port_debug_menu.cpp.
  */
 
+#include "port_save.h"
 #include "port_types.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -93,6 +94,16 @@ static void ReverseEepromBlocks(u8* buf) {
             buf[b + EEPROM_BLOCK - 1 - i] = t;
         }
     }
+}
+
+void Port_Save_ReadEepromRaSnapshot(uint8_t out[PORT_SAVE_EEPROM_BYTES]) {
+    if (sEepromInited) {
+        memcpy(out, sEeprom, EEPROM_SIZE);
+    } else {
+        /* The per-tick snapshot path must not perform file I/O. */
+        memset(out, 0xFF, EEPROM_SIZE);
+    }
+    ReverseEepromBlocks(out);
 }
 
 /* Write the in-memory EEPROM to f in on-disk order. 1 on full write. */

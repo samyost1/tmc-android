@@ -6,12 +6,16 @@
  * that, and implicit-named natives resolve without registration. */
 
 #include <android/native_window_jni.h>
+#include <android/log.h>
 #include <jni.h>
+#include <stdio.h>
 
 #include "port_second_screen.h"
 
 extern "C" JNIEXPORT void JNICALL Java_dev_picori_tmc_SecondScreenView_nativeSurfaceCreated(
     JNIEnv* env, jobject /*thiz*/, jobject surface, jint width, jint height) {
+    __android_log_print(ANDROID_LOG_INFO, "SecondScreenJNI", "surface handoff %dx%d", (int)width, (int)height);
+    fprintf(stderr, "[second_screen] JNI surface handoff %dx%d\n", (int)width, (int)height);
     ANativeWindow* window = ANativeWindow_fromSurface(env, surface);
     /* Port_SecondScreen_OnSurfaceReady takes ownership of this one
      * reference (releases it internally when replaced/lost) — don't

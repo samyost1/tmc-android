@@ -6,6 +6,7 @@ import android.view.MotionEvent;
 import android.view.Surface;
 import android.view.SurfaceHolder;
 import android.view.SurfaceView;
+import android.util.Log;
 
 /**
  * The panel itself: one SurfaceView whose native Surface is handed to
@@ -24,6 +25,7 @@ import android.view.SurfaceView;
  * come and go however it was hosted.
  */
 class SecondScreenView extends SurfaceView {
+    private static final String TAG = "SecondScreenView";
     private static final long LONG_PRESS_MS = 350;
 
     private long mDownTime;
@@ -48,11 +50,14 @@ class SecondScreenView extends SurfaceView {
 
             @Override
             public void surfaceChanged(SurfaceHolder holder, int format, int width, int height) {
+                Log.i(TAG, "surface changed " + width + "x" + height + " format " + format);
                 nativeSurfaceCreated(holder.getSurface(), width, height);
+                Log.i(TAG, "native surface handoff returned");
             }
 
             @Override
             public void surfaceDestroyed(SurfaceHolder holder) {
+                Log.i(TAG, "surface destroyed");
                 nativeSurfaceDestroyed();
             }
         });

@@ -31,7 +31,8 @@ in this repository.
    and install it. It is debug-signed, so Android will warn about an unknown
    developer.
 2. Put your own `baserom.gba` (USA, SHA-1 `b4bd50e4131b027c334547b4524e2dbbd4227130`)
-   in `Android/data/dev.picori.tmc/files/` on internal storage.
+   in `Android/data/dev.picori.tmc/files/` on internal storage. For the
+   RetroAchievements APK, use `Android/data/dev.picori.tmc.ra/files/`.
 3. Launch. The panel appears on the second display automatically.
 
 Built for the Thor, but it is a plain Android `Presentation` — any device with
@@ -62,21 +63,35 @@ data tables described in `docs/JP_PORT_ENABLEMENT.md`.
 
 ## Build from source
 
-Needs the Android SDK and NDK r26. Build the native library for both ABIs,
-then package:
+Needs the Android SDK and NDK r26. Build both native variants for both ABIs,
+then package each variant:
 
 ```sh
-for abi in arm64-v8a x86_64; do
-  xmake f -y -p android -a $abi --ndk=$ANDROID_NDK_HOME \
-      --game_version=USA --gpu_renderer=y --widescreen_width=384
-  xmake -y
+for variant in vanilla ra; do
+  if [ "$variant" = vanilla ]; then
+    ra=n
+    gradle_task=assembleRelease
+  else
+    ra=y
+    gradle_task=assembleRa
+  fi
+  for abi in arm64-v8a x86_64; do
+    xmake f -y -p android -a "$abi" --ndk="$ANDROID_NDK_HOME" \
+        --game_version=USA --gpu_renderer=y --widescreen_width=384 \
+        --enable_retroachievements="$ra"
+    xmake build -y tmc_pc
+  done
+  (cd android && ./gradlew --no-daemon ":app:$gradle_task")
 done
-cd android && ./gradlew assembleRelease
 ```
 
 `--widescreen_width=384` is what compiles the wide render paths in; without it
 the WIDESCREEN row is hidden because the setting would have nothing to switch.
-The APK lands in `android/app/build/outputs/apk/release/`.
+The vanilla APK is `android/app/build/outputs/apk/release/app-release.apk` with
+package id `dev.picori.tmc`. The RA APK is
+`android/app/build/outputs/apk/ra/app-ra.apk` with package id
+`dev.picori.tmc.ra`; the two can be installed side by side. CI publishes them
+as `tmc-vanilla-android-<version>.apk` and `tmc-ra-android-<version>.apk`.
 
 Swap `--game_version=USA` for `--game_version=EU` to build the EU APK; the
 tracked `build/EU/assets/*_offsets.h` mean that is the only change needed. For a

@@ -15,8 +15,14 @@
 #include "fade.h"
 #ifdef PC_PORT
 #include "port_hdma.h"
+#include "port_rom.h"
 #include "port_second_screen_state.h"
+#ifdef TMC_ENABLE_RETROACHIEVEMENTS
+#include "ra/tmc_ra_runtime.h"
+#include "port_repro.h"
+#endif
 #include <setjmp.h>
+#include <stdlib.h>
 #endif
 #include "gba/io_reg.h"
 
@@ -31,6 +37,9 @@ extern void n64_post(int);
 #endif
 
 extern u32 gRand;
+#ifdef TMC_ENABLE_RETROACHIEVEMENTS
+static uint32_t sRaCaptureFrame;
+#endif
 
 static void InitOverlays(void);
 static bool32 SoftResetKeysPressed(void);
@@ -54,7 +63,11 @@ void AgbMain(void) {
     {
         extern jmp_buf gPortSoftResetJmp;
         extern int gPortSoftResetArmed;
-        setjmp(gPortSoftResetJmp);
+        if (setjmp(gPortSoftResetJmp) != 0) {
+#ifdef TMC_ENABLE_RETROACHIEVEMENTS
+            TmcRaRuntime_ResetCompleted(&gTmcRaRuntime);
+#endif
+        }
         gPortSoftResetArmed = 1;
     }
 #endif
@@ -83,6 +96,12 @@ void AgbMain(void) {
     gRand = 0x1234567;
     MemClear(&gMain, sizeof(gMain));
     SetTask(TASK_TITLE);
+#ifdef TMC_ENABLE_RETROACHIEVEMENTS
+    if (!TmcRaRuntime_IsInitialized(&gTmcRaRuntime) && gRomData != NULL && gRomSize != 0) {
+        TmcRaMemory_Publish();
+        (void)TmcRaRuntime_InitDefault(&gTmcRaRuntime);
+    }
+#endif
     N64_POST(20);
 
     // Game Loop
@@ -99,6 +118,9 @@ void AgbMain(void) {
             default:
                 if (gMain.pauseFrames != 0) {
                     do {
+#ifdef TMC_ENABLE_RETROACHIEVEMENTS
+                        TmcRaRuntime_Idle(&gTmcRaRuntime);
+#endif
                         VBlankIntrWait();
                     } while (--gMain.pauseFrames);
                 }
@@ -108,11 +130,19 @@ void AgbMain(void) {
                     gMain.pauseCount--;
                     cnt = gMain.pauseInterval;
                     while (cnt-- > 0) {
+#ifdef TMC_ENABLE_RETROACHIEVEMENTS
+                        TmcRaRuntime_Idle(&gTmcRaRuntime);
+#endif
                         VBlankIntrWait();
                     }
                 }
 
                 gMain.ticks++;
+#ifdef TMC_ENABLE_RETROACHIEVEMENTS
+                if (sRaCaptureFrame == UINT32_MAX)
+                    exit(1);
+                sRaCaptureFrame++;
+#endif
                 sTaskHandlers[gMain.task]();
 #ifdef TMC_N64
                 {
@@ -129,6 +159,14 @@ void AgbMain(void) {
                 FadeMain();
 
                 AudioMain();
+#ifdef TMC_ENABLE_RETROACHIEVEMENTS
+                {
+                    const bool ra_reset = TmcRaRuntime_Frame(&gTmcRaRuntime);
+                    Port_ReproRaCapture_Tick(sRaCaptureFrame, TmcRaRuntime_FrameView(&gTmcRaRuntime));
+                    if (ra_reset)
+                        DoSoftReset();
+                }
+#endif
                 break;
         }
 #ifdef PC_PORT

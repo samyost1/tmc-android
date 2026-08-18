@@ -44,6 +44,12 @@ tools/binutils
 *.py
 !tools/extract_include_enum.py
 !tools/generate_sounds_embed.py
+!tools/ra/compare_tmc_ra_capture.py
+!tools/ra/tests/test_compare_tmc_ra_capture.py
+!tools/ra/compare_tmc_ra_snapshot.py
+!tools/ra/tests/test_compare_tmc_ra_snapshot.py
+!tools/ra/merge_tmc_ra_requested.py
+!tools/ra/tests/test_merge_tmc_ra_requested.py
 *.pl
 
 # graphics
@@ -147,6 +153,7 @@ state_quick.bin
 # and compiled by tools/CMakeLists.txt (FetchContent) into these dirs.
 tools/include/
 tools/lib/
+tools/ra/mgba_reference_capture
 
 # Matching retail maps from upstream zeldaret/tmc (for per-region address derivation)
 tools/retail_maps/
@@ -175,3 +182,16 @@ android/app/build/
 *.jks
 *.keystore
 keystore.properties
+
+# RetroAchievements integration: local-only inputs and evidence. These can
+# contain ROM-derived, account, save, or device data and must never enter Git.
+/private/
+/artifacts/
+*.state
+*.ss0
+*.token
+ra-*.snapshot.bin
+ra-*.provenance.bin
+ra-*.validity.bin
+requested.bin
+overworld.jpg

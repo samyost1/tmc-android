@@ -26,10 +26,71 @@
 #include <math.h>
 #include <setjmp.h>
 #include "port_repro.h"
+#include "../tools/ra/tmc_ra_input_replay.h"
+#ifdef TMC_ENABLE_RETROACHIEVEMENTS
+#include "tmc_ra_runtime.h"
+#endif
 
 static bool gQuitRequested = false;
 static bool sFastForward = false;
 static int sFrameNum = 0;
+
+static bool Port_RaSaveStateAllowed(void) {
+#ifdef TMC_ENABLE_RETROACHIEVEMENTS
+    return TmcRaRuntime_CanRestoreSaveState(&gTmcRaRuntime);
+#else
+    return true;
+#endif
+}
+
+static bool Port_RaFastForwardAllowed(void) {
+#ifdef TMC_ENABLE_RETROACHIEVEMENTS
+    return TmcRaRuntime_CanFastForward(&gTmcRaRuntime);
+#else
+    return true;
+#endif
+}
+
+static bool Port_RaPracticeAllowed(void) {
+#ifdef TMC_ENABLE_RETROACHIEVEMENTS
+    return TmcRaRuntime_CanUsePracticeControls(&gTmcRaRuntime);
+#else
+    return true;
+#endif
+}
+
+/* Explicit native capture input: TMC_RA_INPUT_REPLAY=<path>. The shared
+ * parser uses pressed GBA bits; this port converts them back to KEYINPUT's
+ * active-low representation. No replay path leaves live input untouched. */
+static TmcRaInputReplay sInputReplay;
+static int sInputReplayState = -1; /* -1 unread, 0 absent, 1 active */
+
+static bool Port_InputReplayEnabled(void) {
+    if (sInputReplayState < 0) {
+        const char* path = getenv("TMC_RA_INPUT_REPLAY");
+        if (path == NULL || *path == '\0') {
+            sInputReplayState = 0;
+        } else if (!TmcRaInputReplay_Open(&sInputReplay, path)) {
+            fprintf(stderr, "[input-replay] rejected: %s\n",
+                    TmcRaInputReplay_ErrorString(sInputReplay.error));
+            exit(1);
+        } else {
+            sInputReplayState = 1;
+        }
+    }
+    return sInputReplayState == 1;
+}
+
+static u16 Port_InputReplayPressed(void) {
+    u16 pressed_mask = 0;
+
+    if (!TmcRaInputReplay_Next(&sInputReplay, &pressed_mask)) {
+        fprintf(stderr, "[input-replay] failed while reading: %s\n",
+                TmcRaInputReplay_ErrorString(sInputReplay.error));
+        exit(1);
+    }
+    return pressed_mask;
+}
 
 /* Soft-reset re-entry. AgbMain arms this with setjmp() at the top of the
  * game loop; SoftReset() longjmp()s back to re-run AgbMain's init (which
@@ -76,6 +137,8 @@ u64 DivAndModCombined(s32 num, s32 denom) {
 static void Port_UpdateInput(void) {
     Port_ApplyLanguage();
     u16 keyinput = 0x03FF;
+    const bool input_replay = Port_InputReplayEnabled();
+    const u16 replay_mask = input_replay ? Port_InputReplayPressed() : 0;
 
     /* Generic framebuffer capture for verification: set TMC_CAPTURE_FRAME=N and
      * TMC_CAPTURE_OUT=<path.png> to dump one PNG of the base framebuffer at frame
@@ -132,21 +195,25 @@ static void Port_UpdateInput(void) {
         }
     }
 
-    for (size_t i = 0; i < sizeof(sInputMap) / sizeof(sInputMap[0]); i++) {
-        if (Port_Config_InputPressed(sInputMap[i].input)) {
-            keyinput &= ~sInputMap[i].gbaMask;
+    if (input_replay) {
+        keyinput = (u16)(TMC_RA_INPUT_REPLAY_GBA_MASK & (u16)~replay_mask);
+    } else {
+        for (size_t i = 0; i < sizeof(sInputMap) / sizeof(sInputMap[0]); i++) {
+            if (Port_Config_InputPressed(sInputMap[i].input)) {
+                keyinput &= ~sInputMap[i].gbaMask;
+            }
         }
-    }
 
-    /* Soft-slots (X / Y / L2 / R2): when one is held with an item
-     * assigned, force GBA B_BUTTON pressed so the engine spawns the
-     * soft-slot's item via the regular B-dispatch path. The override of
-     * which item to spawn lives in src/playerUtils.c via
-     * Port_SoftSlots_GetEffectiveBItem(); the save data is untouched. */
-    Port_SoftSlots_Update();
-    Port_RollAttackMacro_Tick(&keyinput);
-    if (Port_SoftSlots_IsBHeld() || Port_RollAttackMacro_IsBHeld()) {
-        keyinput &= ~B_BUTTON;
+        /* Soft-slots (X / Y / L2 / R2): when one is held with an item
+         * assigned, force GBA B_BUTTON pressed so the engine spawns the
+         * soft-slot's item via the regular B-dispatch path. The override of
+         * which item to spawn lives in src/playerUtils.c via
+         * Port_SoftSlots_GetEffectiveBItem(); the save data is untouched. */
+        Port_SoftSlots_Update();
+        Port_RollAttackMacro_Tick(&keyinput);
+        if (Port_SoftSlots_IsBHeld() || Port_RollAttackMacro_IsBHeld()) {
+            keyinput &= ~B_BUTTON;
+        }
     }
 
     /* Decay the pause-active grace counter. The engine's Subtask_PauseMenu
@@ -162,7 +229,7 @@ static void Port_UpdateInput(void) {
     Port_Config_ClearInputEdges();
 
     sFrameNum++;
-    if (gMain.task == 0 && sFrameNum > 300 && sFrameNum < 310) {
+    if (!input_replay && gMain.task == 0 && sFrameNum > 300 && sFrameNum < 310) {
         *(vu16*)(gIoMem + REG_OFFSET_KEYINPUT) &= ~START_BUTTON;
     }
 
@@ -177,7 +244,8 @@ static void Port_UpdateInput(void) {
     /* Late half of the rando repro: applies the homewarp stage's queued
      * KEYINPUT presses after the store above (the early tick at the top
      * of this function would be overwritten). */
-    { Port_ReproRando_LateTick(); }
+    if (!input_replay)
+        Port_ReproRando_LateTick();
 
     /* Performance-capture harness (TMC_PERFCAP=1): drive into gameplay and
      * dump a complete PPU snapshot for the standalone render microbench. */
@@ -349,8 +417,11 @@ static void Port_PumpEvents(void) {
              * save-states let a run restore arbitrary state mid-glitch, which
              * has no hardware equivalent. Swallow F1-F6 here so neither save
              * nor load fires. */
-            if ((e.key.key >= SDLK_F1 && e.key.key <= SDLK_F6) && Port_Config_GetConsoleParity()) {
-                Port_DebugMenu_ToastFromExternal("Save-states disabled (Console-Parity)");
+            if ((e.key.key >= SDLK_F1 && e.key.key <= SDLK_F6) &&
+                (Port_Config_GetConsoleParity() || !Port_RaSaveStateAllowed())) {
+                Port_DebugMenu_ToastFromExternal(Port_Config_GetConsoleParity()
+                                                     ? "Save-states disabled (Console-Parity)"
+                                                     : "Save-states disabled (RA policy)");
                 continue;
             }
             if (e.key.key == SDLK_F5) {
@@ -384,7 +455,7 @@ static void Port_PumpEvents(void) {
              * save-state F-keys above), but suppressed while an ImGui text
              * field is focused so typing a seed/filename doesn't trip pause.
              * Keys avoid the taken F1..F12 / TAB / BACKSLASH bindings. */
-            if (!Port_ImGui_WantsTextInput()) {
+            if (!Port_ImGui_WantsTextInput() && Port_RaPracticeAllowed()) {
                 bool handled = true;
                 switch (e.key.key) {
                     case SDLK_LEFTBRACKET: /* [  set practice point */
@@ -425,7 +496,8 @@ static void Port_PumpEvents(void) {
                 }
             }
             if (e.key.key == SDLK_TAB) {
-                sFastForward = true;
+                if (Port_RaFastForwardAllowed())
+                    sFastForward = true;
                 continue;
             }
         }
@@ -467,7 +539,8 @@ static void Port_PumpEvents(void) {
                  * the second button's down-edge; Select is not consumed so
                  * repeated taps (e.g. frame-advance) work while held. Start is
                  * excluded — that pair is the menu toggle. */
-                if (is_down && s_select_held && e.gbutton.button != SDL_GAMEPAD_BUTTON_BACK &&
+                if (is_down && s_select_held && Port_RaPracticeAllowed() &&
+                    e.gbutton.button != SDL_GAMEPAD_BUTTON_BACK &&
                     e.gbutton.button != SDL_GAMEPAD_BUTTON_START) {
                     switch (e.gbutton.button) {
                         case SDL_GAMEPAD_BUTTON_SOUTH: /* A: reload point */
@@ -1019,7 +1092,8 @@ void VBlankIntrWait(void) {
 
     Port_PumpEvents();
     Port_UpdateInput();
-    Port_TestInputTick(gMain.ticks);
+    if (!Port_InputReplayEnabled())
+        Port_TestInputTick(gMain.ticks);
 
     /* Speedrun practice: advance the IGT frame counter and sample the input
      * display. After Port_UpdateInput() so the sampled mask is this frame's. */

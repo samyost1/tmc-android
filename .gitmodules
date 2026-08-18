@@ -7,3 +7,6 @@
 [submodule "libs/tmc-Modern-Launcher"]
 	path = libs/tmc-Modern-Launcher
 	url = https://github.com/MatheoVignaud/tmc-Modern-Launcher.git
+[submodule "rcheevos"]
+	path = libs/rcheevos
+	url = https://github.com/RetroAchievements/rcheevos.git

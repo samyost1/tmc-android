@@ -30,6 +30,7 @@ android {
         targetSdk 34
         versionCode tmcVersionCode
         versionName tmcVersion
+        buildConfigField "boolean", "RA_ENABLED", "false"
         // ABIs come from whatever xmake produced into ../build/android/<abi>/
         // (see jniLibs sourceSets below) — no externalNativeBuild: the native
         // lib is built by xmake, Gradle only packages it.
@@ -46,6 +47,9 @@ android {
     compileOptions {
         sourceCompatibility JavaVersion.VERSION_17
         targetCompatibility JavaVersion.VERSION_17
+    }
+    buildFeatures {
+        buildConfig true
     }
     // Release signing: CI provides a persistent keystore via env vars
     // (TMC_KEYSTORE_FILE / TMC_KEYSTORE_PASSWORD, decoded from the
@@ -67,11 +71,21 @@ android {
         }
     }
     buildTypes {
-        debug { debuggable true }
+        debug {
+            debuggable true
+            buildConfigField "boolean", "RA_ENABLED", "false"
+        }
         release {
             minifyEnabled false
+            buildConfigField "boolean", "RA_ENABLED", "false"
             signingConfig((ksFile != null && !ksFile.isEmpty())
                 ? signingConfigs.picoriRelease : signingConfigs.debug)
+        }
+        ra {
+            initWith release
+            applicationIdSuffix ".ra"
+            matchingFallbacks = ["release"]
+            buildConfigField "boolean", "RA_ENABLED", "true"
         }
     }
     // libmain.so is ~50 MB with debug info; don't compress native libs
@@ -80,4 +94,8 @@ android {
     packagingOptions {
         jniLibs { useLegacyPackaging false }
     }
+}
+
+dependencies {
+    testImplementation "junit:junit:4.13.2"
 }

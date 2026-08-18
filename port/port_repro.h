@@ -11,6 +11,13 @@
  * include this header so the compiler checks the definition against it.
  */
 
+#include <stdbool.h>
+#include <stdint.h>
+
+#ifdef TMC_ENABLE_RETROACHIEVEMENTS
+#include "tmc_ra_memory.h"
+#endif
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -23,6 +30,13 @@ void Port_ReproRoomCap_Tick(unsigned int frame);
 void Port_ReproRollMacro_Tick(unsigned int frame);
 void Port_ReproNpcTalk_Tick(unsigned int frame);
 void Port_ReproItemGet_Tick(unsigned int frame);
+#ifdef TMC_ENABLE_RETROACHIEVEMENTS
+void Port_ReproRaCapture_Tick(uint32_t frame, TmcRaFrameView view);
+bool Port_ReproRaCapture_CheckpointValid(const char* checkpoint);
+bool Port_ReproRaCapture_Request(const char* checkpoint, const char* output_path);
+bool Port_ReproRaRequestedAudit_Request(const char* output_path);
+bool Port_ReproRaSnapshotAudit_Request(const char* output_base);
+#endif
 
 #ifdef __cplusplus
 }
