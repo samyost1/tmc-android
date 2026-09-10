@@ -228,6 +228,13 @@ bool32 IsColliding(Entity* this, Entity* that) {
 #endif
             if (pa_bad || pb_bad) {
                 static int s_warned = 0;
+                /* Also record it for the F9 / crash bundle: a rejected pair
+                 * silently stops colliding, so the report has to name it. */
+                extern void Port_BugReport_NoteBadHitbox(unsigned, unsigned, unsigned, unsigned long long);
+                if (pa_bad)
+                    Port_BugReport_NoteBadHitbox(this->kind, this->id, this->type, (unsigned long long)pa);
+                else
+                    Port_BugReport_NoteBadHitbox(that->kind, that->id, that->type, (unsigned long long)pb);
                 if (s_warned < 8) {
                     s_warned++;
                     fprintf(stderr,
@@ -426,7 +433,10 @@ CollisionResult CollisionNoOp(Entity* org, Entity* tgt, u32 direction, ColSettin
 CollisionResult CollisionGroundItem(Entity* org, Entity* tgt, u32 direction, ColSettings* settings) {
     COLLISION_OFF(tgt);
     tgt->contactFlags = org->hurtType | CONTACT_NOW;
-    if ((tgt->type == 0x5F || tgt->type == 0x60) && sub_08081420(tgt))
+    /* sub_08081420 is tri-state on PC (0 direct, 1 cutscene, 2 retry): only
+     * a started cutscene may zero health, otherwise a failed allocation would
+     * delete the pickup with its flag set and lose the item. */
+    if ((tgt->type == 0x5F || tgt->type == 0x60) && sub_08081420(tgt) == 1)
         tgt->health = 0;
     return RESULT_COLLISION_WITHOUT_SET;
 }

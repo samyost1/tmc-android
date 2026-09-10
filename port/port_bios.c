@@ -14,6 +14,9 @@
 #include "port_imgui_menu.h"
 #include "port_ppu.h"
 #include "port_rom.h"
+#ifdef TMC_RA
+#include "port_ra.h"
+#endif
 #include "port_practice.h"
 #include "port_runtime_config.h"
 #include "port_roll_attack_macro.h"
@@ -21,7 +24,7 @@
 #include "port_touch_controls.h"
 #include "port_tts.h"
 #include "rando/rando_file_menu.h"
-#include "port_types.h"
+#include "port_level_editor.h"
 #include <SDL3/SDL.h>
 #include <math.h>
 #include <setjmp.h>
@@ -124,8 +127,12 @@ static void Port_UpdateInput(void) {
          * to the overlay. The soft-slot configuration overlay piggybacks
          * on this behaviour while it's the active focus. */
         if (Port_DebugMenu_IsOpen() || Port_SoftSlots_ConfigIsOpen() || Port_InGameSettingsModalIsOpen() ||
-            Port_RandoFileMenu_IsOpen()) {
+            Port_RandoFileMenu_IsOpen() || Port_LevelEditor_IsOpen()) {
             *(vu16*)(gIoMem + REG_OFFSET_KEYINPUT) = keyinput;
+            /* The one-frame edge cache must be cleared on this path too: the
+             * event loop keeps stamping edges for keys/pad buttons the overlays
+             * ignore, and a stale flag would fire the frame the overlay closes. */
+            Port_Config_ClearInputEdges();
             Port_SoftSlots_TickPause();
             sFrameNum++;
             return;
@@ -221,6 +228,21 @@ static void Port_PumpEvents(void) {
          * stays in sync. ImGui only consumes input when a widget is
          * actively hovered/focused; game input passes through. */
         Port_ImGui_HandleEvent(&e);
+        if (Port_LevelEditor_IsOpen()) {
+            if (e.type == SDL_EVENT_KEY_DOWN && !e.key.repeat && !Port_ImGui_WantsTextInput()) {
+                if (Port_LevelEditor_HandleKey((int)e.key.key, (int)e.key.scancode)) {
+                    continue;
+                }
+            } else if (e.type == SDL_EVENT_MOUSE_BUTTON_UP ||
+                       (e.type == SDL_EVENT_MOUSE_BUTTON_DOWN && !Port_ImGui_WantsMouse())) {
+                int state = (e.type == SDL_EVENT_MOUSE_BUTTON_DOWN) ? 1 : 0;
+                Port_LevelEditor_HandleMouseButton((int)e.button.button, state, e.button.x, e.button.y);
+                continue;
+            } else if (e.type == SDL_EVENT_MOUSE_MOTION && !Port_ImGui_WantsMouse()) {
+                Port_LevelEditor_HandleMouseMotion(e.motion.x, e.motion.y);
+                continue;
+            }
+        }
         if (e.type == SDL_EVENT_QUIT) {
             /* Route the close-button (X) / OS-quit signal through the
              * ImGui modal first so users get a chance to save. The
@@ -420,7 +442,7 @@ static void Port_PumpEvents(void) {
              * suppress further handling so the game itself doesn't see
              * the keystroke. */
             {
-                if (Port_DebugMenu_IsOpen() && Port_DebugMenu_HandleKey((int)e.key.key)) {
+                if (Port_DebugMenu_IsOpen() && !Port_ImGui_WantsTextInput() && Port_DebugMenu_HandleKey((int)e.key.key)) {
                     continue;
                 }
             }
@@ -1042,6 +1064,15 @@ void VBlankIntrWait(void) {
                                (int)gSave.stats.rupees);
     }
 
+    /* RetroAchievements: evaluate conditions once per emulated frame. This is
+     * the end of the game's frame — the engine has finished mutating its
+     * native globals (same reason the Discord block above can read gSave
+     * directly) and VBlankIntr() below only does the DMA/OAM upload. No-op
+     * unless ra_enabled is set. */
+#ifdef TMC_RA
+    Port_RA_FrameTick();
+#endif
+
     VBlankIntr();
 }
 
@@ -1073,10 +1104,10 @@ static const u8* Port_RomBufferEnd(const void* src) {
     return Port_LoadedAssetBytesEnd(src);
 }
 
-/* LZ77 decompressor (SWI 0x11/0x12) */
-static void lz77_decomp(const u8* src, u8* dst, size_t dstCap, const u8* srcEnd) {
+/* LZ77 decompressor (SWI 0x11/0x12). Returns bytes written. */
+static u32 lz77_decomp(const u8* src, u8* dst, size_t dstCap, const u8* srcEnd) {
     if (srcEnd && src + 4 > srcEnd)
-        return;
+        return 0;
     u32 header = src[0] | (src[1] << 8) | (src[2] << 16) | (src[3] << 24);
     u32 decompSize = header >> 8;
     src += 4;
@@ -1096,7 +1127,7 @@ static void lz77_decomp(const u8* src, u8* dst, size_t dstCap, const u8* srcEnd)
             if (flags & (1 << i)) {
                 /* Compressed block: 2 bytes → length + distance */
                 if (srcEnd && src + 2 > srcEnd)
-                    return;
+                    return written;
                 u8 b1 = *src++;
                 u8 b2 = *src++;
                 u32 length = ((b1 >> 4) & 0xF) + 3;
@@ -1105,7 +1136,7 @@ static void lz77_decomp(const u8* src, u8* dst, size_t dstCap, const u8* srcEnd)
                 /* A back-reference pointing before the output start is
                  * malformed; refuse rather than wild-read host memory. */
                 if (distance > written)
-                    return;
+                    return written;
                 for (u32 j = 0; j < length && written < decompSize; j++) {
                     dst[written] = dst[written - distance];
                     written++;
@@ -1113,11 +1144,28 @@ static void lz77_decomp(const u8* src, u8* dst, size_t dstCap, const u8* srcEnd)
             } else {
                 /* Uncompressed byte */
                 if (srcEnd && src >= srcEnd)
-                    return;
+                    return written;
                 dst[written++] = *src++;
             }
         }
     }
+    return written;
+}
+
+/* Bounded variant for untrusted on-disk blobs: fails unless the declared size
+ * fits dstCap and the whole stream is present. dst may be a host or GBA address. */
+bool Port_LZ77Decompress(const void* src, size_t srcLen, void* dst, size_t dstCap) {
+    if (srcLen < 4)
+        return false;
+    const u8* s = (const u8*)src;
+    u32 decompSize = (s[0] | (s[1] << 8) | (s[2] << 16) | (s[3] << 24)) >> 8;
+    size_t regionCap = Port_GbaRegionBytesLeft((uintptr_t)dst);
+    if (regionCap && regionCap < dstCap)
+        dstCap = regionCap;
+    if (decompSize > dstCap)
+        return false;
+    u8* resolved = (u8*)port_resolve_addr((uintptr_t)dst);
+    return resolved && lz77_decomp(s, resolved, dstCap, s + srcLen) == decompSize;
 }
 
 void LZ77UnCompVram(const void* src, void* dst) {
@@ -1275,35 +1323,6 @@ void SoftReset(u32 flags) {
     _Exit(0);
 }
 
-/* BgAffineSet (SWI 0x0E) */
-void BgAffineSet(struct BgAffineSrcData* src, struct BgAffineDstData* dst, s32 count) {
-    for (s32 i = 0; i < count; i++) {
-        dst[i].pa = src[i].sx;
-        dst[i].pb = 0;
-        dst[i].pc = 0;
-        dst[i].pd = src[i].sy;
-        dst[i].dx = src[i].texX - src[i].scrX * src[i].sx;
-        dst[i].dy = src[i].texY - src[i].scrY * src[i].sy;
-    }
-}
-
-/* ObjAffineSet (SWI 0x0F)
- *
- * GBA BIOS computes the *inverse* texture-mapping matrix: hardware applies
- * pa/pb/pc/pd to screen-relative coordinates to produce texture coordinates.
- * For a visible scale of sx, the matrix uses 1/sx — so doubling sx halves
- * the sampled-texture step per screen pixel and the sprite *grows*.
- *
- *   pa =  cos(θ) / sx
- *   pb = -sin(θ) / sy
- *   pc =  sin(θ) / sx
- *   pd =  cos(θ) / sy
- *
- * Inputs sx/sy are 8.8 fixed point (0x100 = 1.0). Output pa/pb/pc/pd are
- * also 8.8 fixed point. Each is written as one s16 at `offset`-byte
- * intervals — for OAM (offset=8), that puts the four values in the
- * affineParam field of 4 consecutive OAM entries.
- */
 /* BIOS-accurate sin/cos: the GBA BIOS ObjAffineSet/BgAffineSet quantize the
  * angle to its high 8 bits (256 steps, low byte discarded) and look up a Q1.14
  * (0x4000 = 1.0) sine table, then floor the scaled products with `asr`. The
@@ -1324,6 +1343,62 @@ static void InitBiosSinLut(void) {
     sBiosSinLutInit = 1;
 }
 
+/* BgAffineSet (SWI 0x0E)
+ *
+ * Builds the BG rotation/scaling matrix the hardware applies to screen
+ * coordinates. Only the upper 8 bits of `alpha` are significant (256-step
+ * circle), looked up in the same Q1.14 table as ObjAffineSet:
+ *
+ *   pa =  sx*cos    pb = -sx*sin
+ *   pc =  sy*sin    pd =  sy*cos
+ *   dx = texX - (pa*scrX + pb*scrY)
+ *   dy = texY - (pc*scrX + pd*scrY)
+ *
+ * This previously hardcoded pb = pc = 0 and ignored alpha entirely, which is
+ * only correct for alpha == 0.
+ */
+void BgAffineSet(struct BgAffineSrcData* src, struct BgAffineDstData* dst, s32 count) {
+    if (!sBiosSinLutInit)
+        InitBiosSinLut();
+    for (s32 i = 0; i < count; i++) {
+        u32 idx = ((u16)src[i].alpha >> 8) & 0xFFu;
+        s32 sinv = sBiosSinLut[idx];
+        s32 cosv = sBiosSinLut[(idx + 0x40u) & 0xFFu];
+        s32 pa = (src[i].sx * cosv) >> 14;
+        s32 pb = (-src[i].sx * sinv) >> 14;
+        s32 pc = (src[i].sy * sinv) >> 14;
+        s32 pd = (src[i].sy * cosv) >> 14;
+
+        dst[i].pa = (s16)pa;
+        dst[i].pb = (s16)pb;
+        dst[i].pc = (s16)pc;
+        dst[i].pd = (s16)pd;
+        dst[i].dx = src[i].texX - (pa * src[i].scrX + pb * src[i].scrY);
+        dst[i].dy = src[i].texY - (pc * src[i].scrX + pd * src[i].scrY);
+    }
+}
+
+/* ObjAffineSet (SWI 0x0F)
+ *
+ * Builds the OBJ matrix the hardware applies to screen-relative coordinates to
+ * produce texture coordinates. Because that mapping is screen -> texture, the
+ * matrix is the *inverse* of the visible transform: a larger xScale steps
+ * further through the texture per screen pixel, so the sprite appears SMALLER.
+ * Callers pass the value they want in the matrix, not the visible scale --
+ * e.g. pullableMushroom's stalk lowers xScale from 0x200 to stretch itself.
+ *
+ *   pa =  sx*cos(theta)    pb = -sx*sin(theta)
+ *   pc =  sy*sin(theta)    pd =  sy*cos(theta)
+ *
+ * Inputs sx/sy are 8.8 fixed point (0x100 = 1.0). Output pa/pb/pc/pd are
+ * also 8.8 fixed point. Each is written as one s16 at `offset`-byte
+ * intervals — for OAM (offset=8), that puts the four values in the
+ * affineParam field of 4 consecutive OAM entries.
+ *
+ * NOTE: an earlier version of this comment claimed pa = cos/sx, i.e. the
+ * opposite convention. That contradicted the code below, which is correct --
+ * do not "fix" the code to match a comment again.
+ */
 void ObjAffineSet(struct ObjAffineSrcData* src, void* dst, s32 count, s32 offset) {
     u8* d = (u8*)dst;
     if (!sBiosSinLutInit)

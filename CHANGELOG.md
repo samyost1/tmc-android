@@ -1,5 +1,232 @@
 # Changelog
 
+## v0.9.1 (2026-09-10)
+
+Focused on European and Japanese ROM support. A single binary has run all
+three regions since v0.8.0, but a lot of data was still read from
+USA-baseline addresses and then resolved inside whichever ROM was loaded —
+which lands on the wrong bytes. This release resolves those per region.
+
+### European and Japanese ROM parity
+
+- **Collision masks and tile properties are read from the loaded ROM's own
+  tables.** Both were reached through compiled USA addresses, so EU got data
+  0x98/0x48 bytes off — wrong collision shapes, including false walls (e.g.
+  Link's house east doorway).
+- **Kinstone fusions work on EU.** The fusion-text, fuser-fusion and
+  enemy/NPC fuser key tables had the same problem: on EU, fuser N read EU
+  fuser N-42, so offers, reward text and world events belonged to a
+  different fuser.
+- **EU HUD and item labels render correctly.** EU deletes sprite index 288,
+  so every index the C code names by enum (>=289) is one too high on EU. The
+  A/B/R button bubbles and item/heart/label sprites (505, 322) are remapped,
+  and so are 14 enemy and 7 projectile definitions — the Gyorg family, Vaati
+  Transfigured and its eye, spear/bow Moblins, slimes, fireball guys, the
+  curtain, rupee-like, arrows, cannonballs, spiked rollers and eye lasers.
+  Previously these drew a neighbouring sprite's frames (Gyorg's eyes showed
+  four unrelated OBJ pieces each).
+- **Sprite, frame and graphics tables are sized per region** (EU 328 sprite
+  pointers / 199561 frame-list bytes / 525 fixed-gfx entries). EU was read
+  with USA sizes, running 481 bytes past the frame-list table; the USA and JP
+  fixed-gfx count was also two entries too high.
+- **JP and EU frame offsets come from their own ROM.** `gExtraFrameOffsets`
+  always used the compiled USA copy; both other regions differ from it.
+- **Region-native room data.** 14 compiled EntityData/TileEntity blobs carry
+  flag ordinals and ROM pointers baked for USA. They now resolve to the
+  loaded region's bytes at the shared room loaders, which covers Cloud Tops,
+  the Sanctuary, Lon Lon Ranch, Veil Falls, Castle Garden, the Goron
+  wall-break events and kinstone world events. The Goron wall table is also
+  bounds-checked and its tile pattern validated before anything is drawn.
+- **Fused lilypads move on EU/JP** (the rails table was USA-only), and the
+  inn, Simon's Simulation, Lake Hylia, guard patrol, Gust Jar, figurine and
+  collision-matrix tables resolve per region.
+- **EU Italian is selectable** — language slot 6 was never loaded.
+- **Extracted-asset overrides no longer clobber EU/JP ROM tables.** The
+  cached gfx groups, texts, sprite pointers, palettes, area tables and sprite
+  animations are USA-baseline, but were applied on top of whatever region was
+  loaded, overwriting the region-correct tables just resolved from the ROM.
+  They are gated to USA now. `GFX_STOP` also no longer reports an unextracted
+  graphics group as missing.
+- Region data and offsets ported from
+  [EstebanPdN/zelda-tmc-3ds](https://github.com/EstebanPdN/zelda-tmc-3ds)
+  (GPL-3.0); JP offsets derived here and checked against clean ROMs by
+  `tools/verify_eu_region_data.py` (28/28).
+
+### Fixed
+
+- **#190 Talking to a maid left Link uncontrollable (JP, and EU).** The port
+  maps the maid's dialogue-callback address from the script, but only the two
+  USA addresses were listed, so on EU/JP the callback resolved to nothing:
+  no message ever opened and Link stayed in the talk state forever. All three
+  regions' addresses are mapped now.
+- **#190 Torn dialogue box.** The widescreen text-centering band was computed
+  from the message request rather than the box actually on screen. Text that
+  moves its own window (item-get messages) ended up straddling the band edge,
+  so the top of the box shifted sideways and the bottom did not. Affected all
+  regions.
+- **#186 Crash entering the Deepwood Shrine button room from the stairs
+  hallway.** The tilemap source offset for a southward scroll was built
+  unsigned; in widescreen the camera rest sits left of the next room's origin,
+  so a small negative offset became +8 GiB on 64-bit instead of wrapping like
+  the GBA's 32-bit add. Only release (widescreen) builds could reach it.
+- **#184 Crash on quit (macOS arm64, also Linux).** Quitting leaves through
+  `exit(0)`, so audio and TTS shutdown never ran: C++ static destructors freed
+  the music mixer while the audio thread was still rendering from it, and
+  destroyed a still-running speech worker. Both now shut down first. 15
+  consecutive quits crashed before the fix, 15 exit cleanly after.
+- **Save files now use the retail layout.** Flags and the dungeon
+  key/item/warp arrays sat one byte early, so saves shared with emulators
+  were misread in both directions. Existing PC saves are migrated on load
+  (the original is kept as `.bak`; `TMC_SAVE_RETAIL_LAYOUT=1` skips it).
+- An entity whose hitbox pointer is rejected by the safety guard stops
+  colliding silently. Bug reports now name that entity instead of leaving
+  "I walk through enemies" unattributable.
+
+### Engine fixes ported from the 3DS fork (round 2)
+
+- `DispReset` now stops HDMA channel 0 on PC (the `DmaStop(0)` call is a host
+  no-op), so per-scanline affine DMA no longer leaks into the next room; the
+  rolling-barrel exit-handler workaround that papered over it is gone.
+- Camera init tested the preserved-axis bit with `u16 * 0x10000 < 0`
+  (signed-overflow UB); adjacent-room transitions are only probed from inside
+  the current room (unsigned underflow could chain a second transition).
+- The charge bar reads region-remapped art instead of USA offsets;
+  `LoadGfxGroup` DMA into EWRAM lands in the native
+  `gMapTop`/`gMapBottom`/special buffers.
+- Widescreen: rain columns, the cucco-aggression spawn ring and the bomb
+  peahat's right-edge target scale with the live view width.
+
+### Developer tools
+
+- Level editor: hotkeys no longer reach gameplay (S was the default R button);
+  the room-load hook returns immediately when neither `edited_levels/` nor
+  `Areas/` exists (it used to open ~15 files and log every room load for every
+  player); the F8 help lists the real hotkeys and the toggle is disabled on the
+  SDL_GPU backend where the overlay cannot draw.
+- Flag browser: bank-1 names are correct on EU/JP ROMs (the USA-ordered table
+  is inverted through the region remap; region-only flags show `UNKNOWN`);
+  flag notifications fire only on 0→1 and log to stderr; DEMO_JP-only rows
+  removed; the search list no longer reallocates every frame.
+- RetroAchievements: an in-flight transfer is aborted at shutdown instead of
+  blocking exit for up to 30 s; libcurl is a hard requirement on desktop
+  (built from source when the system lacks it); dead `--ra=n` stubs removed.
+  Achievement conditions on save flags now read the right bytes (see the save
+  layout fix above).
+
+### Known
+
+- **#190 walk-through-enemy is not fixed.** The attached save is from the
+  prologue and cannot reach the reported state, and JP collision itself
+  checks out (a spawned Octorok collides normally, and the JP collision
+  tables match USA byte for byte). The most likely cause is a corrupted
+  hitbox pointer being rejected by the guard above — which is exactly why
+  that rejection is now in the bug report. A fresh report captured while it
+  is happening should name the entity.
+
+## v0.9.0 (2026-09-10)
+
+### RetroAchievements (opt-in)
+
+- **RetroAchievements client** built on the vendored rcheevos library
+  (`libs/rcheevos`, MIT). Off by default: set `ra_enabled` in `config.json`
+  or use F8 → Achievements to log in; only the session token is persisted.
+  Unlocks show as corner toasts; rich presence is reported. Hardcore mode is
+  forced off — this port has save states, speed control and practice mode and
+  is not an RA-approved client. `--ra=n` compiles the feature out; Android
+  builds have no libcurl and always compile it out.
+- Achievement conditions read GBA addresses, but this is a decompilation, not
+  an emulator: the engine's state lives in native C globals. A per-frame shadow
+  (`port/port_gba_shadow.c`) mirrors the globals whose layout is proven
+  byte-identical to retail by compile-time size gates back to their
+  `linker.ld` addresses. Anything else reads as **unserved**, so rcheevos marks
+  the achievement *Unsupported* instead of evaluating it against zeros; the
+  F8 tab lists every unserved address the loaded set asked for so the missing
+  row can be added. (PR #189)
+- Linux builds now need `libcurl4-openssl-dev`; `build.py` and the README
+  list it.
+
+### Level editor and flag browser (developer tools)
+
+- **In-game level editor** (F8 → Map Editor → "Enable Direct Painting
+  Overlay"): paint tiles with the mouse, eyedropper, undo/redo, save the room
+  to `edited_levels/area%02X_room%02X.bin`; edited rooms load on entry. SDL
+  renderer backend only — the SDL_GPU backend shows no overlay. (PR #173,
+  @alfonsoalvarohervas-sudo)
+  - Hardened before release: level files are a disk trust boundary, so LZ77
+    assets decompress through a bounded path that checks the declared size
+    against the destination, entity/warp lists must be whole records ending
+    in the terminator, and editor input is ignored while ImGui owns the
+    mouse/keyboard or outside normal gameplay (menus alias the buffers it
+    paints into).
+- **F8 → Flags tab shows flag names and descriptions** instead of raw
+  numbers, with hover tooltips and a case-insensitive search across all
+  banks; optional `debug_flag_notifications` logs and toasts every flag that
+  turns on. Keyboard menu navigation no longer steals Backspace/Escape from
+  ImGui text fields. Names are the USA enum order; EU/JP bank-1 ordinals are
+  remapped at runtime and can show a neighbouring name. (PR #166,
+  @alfonsoalvarohervas-sudo)
+- **Custom map layouts can't read out of bounds**: tile indices past the
+  2048-entry tileset/collision/act-tile tables (or special tiles past 151)
+  resolve to tile 0 instead of indexing off the end. The dungeon-map asset
+  parser skips CR so CRLF checkouts build on Windows. (from PR #167, credit
+  @alfonsoalvarohervas-sudo)
+
+### Gameplay fixes ported from the 3DS fork
+
+Verified subset of [EstebanPdN/zelda-tmc-3ds](https://github.com/EstebanPdN/zelda-tmc-3ds)
+(GPL-3.0, branched from v0.8.3), each re-derived against master (PR #188 plus
+the fork's later E11 fixes):
+
+- **Item-get can no longer eat an item.** The location flag was set before the
+  cutscene entities were allocated; under entity pressure the item vanished
+  with its flag already committed. The flag now rides on the LinkHoldingItem
+  entity and is committed after `GiveItem`.
+- **Minish-path leaf backgrounds draw again**, on both layers: the leaf
+  tilemap was written to a buffer nothing read (`gMapDataTopSpecial+0x2000`
+  aliases `gUnk_02006F00` on GBA), and the PC read bound then rejected every
+  nonzero scroll on the second layer.
+- **`{Player}` in figurine-name text was empty** — `gTextVariableSources[0]`
+  aliases `gTextRender.player_name` on GBA; PC now writes it.
+- **Collision-layer transitions**: `CheckOnLayerTransition`'s comparison was
+  reversed (layer-3 records could only fire for entities already on layer 3),
+  `UpdateCollisionLayer` returns the pre-transition act tile like the asm,
+  special tiles index `gMapSpecialTileToActTile` instead of a u16 table read
+  as bytes, and the lantern other-layer fallback is narrowed to its mask.
+- **12 tile-property rows restored** in `data_080046A4` that a v0.8.x change
+  had replaced with 8 bogus pairs.
+- **Entity-pressure guards**: Cloud Tops whirlwind delayed-spawn bit,
+  pullable mushroom child/affine pointers, a NULL target deref, and a UB
+  negative shift in spiked rollers.
+- **Goron Kinstone script callbacks registered** (USA/EU/JP).
+- **Affine sprites survive subtasks**: GBA `0x03000420` aliases the OAM
+  affine table; the PC snapshot/restore around pause/kinstone/map subtasks
+  copied a dead buffer.
+- **GFX-slot compaction** never moves into slot 0 (the "no free slot" result)
+  over the four reserved palette slots; `LoadSwapGFX` bounds its count/slot.
+- **A truncated, oversized, unrecognised or other-region `tmc.sav` is left
+  untouched** instead of being reformatted; writes are blocked. libretro-style
+  0xFF-padded 32/128 KiB images still import.
+- `gMapData` points into the loaded ROM instead of a 14 MB copy.
+
+Not ported: the fork's EU regional-table relocation (still USA-pinned on PC),
+Prof9-style EU backport behaviour changes (Eenie fusion, Stockwell bomb bag,
+Wind Tribe roof warp), and its EU compaction switch.
+
+### Audit fixes and region work
+
+- **43-finding audit ported onto master** (PR #187): `BgAffineSet` applies the
+  real rotation; HBlank-DMA effects run one scanline later to match hardware
+  phase; tile-interaction writes mask coordinates like reads; song map parsed
+  once at init with EU offsets rebased by the nearest preceding block (most EU
+  songs resolved to the wrong offset); ROM sub-table scans bounded; softslot
+  writes are atomic; JSON asset parsing bounds-checked at the C boundary;
+  config tolerates wrong-typed keys.
+- **EU save language slots centralised** — EU English explicitly uses slot 2
+  and slots 2..6 are accepted; text and preferred-language fallbacks share the
+  helpers. (PR #185, @EstebanPdN)
+- **Softslot items can be assigned from the pause menu**, like A/B items.
+  (PR #183, @NoseDevilEugen)
+
 ## v0.8.3 (2026-07-19)
 
 ### Fixed

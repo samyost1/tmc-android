@@ -70,8 +70,8 @@ void sub_08058004(u32 unk1, void* src, void* dest) {
 #ifdef PC_PORT
     /* Same-class fix as bigGoron.c::sub_0806D164 (issue #102).
      * Callers pass src = gUnk_02006F00 (16 KB) or gUnk_02006F00 + 0x2000
-     * (so 8 KB remaining). The loop reads 32 × 0x100 = 0x2000 bytes
-     * forward from src+startOff. When unk1 is derived from
+     * (so 8 KB remaining). The loop reads 32 rows of 64 bytes spaced
+     * 0x100 apart from src+startOff. When unk1 is derived from
      * scroll_x - origin_x and that goes negative (camera wraps past the
      * BG edge during e.g. a Minish-path transition), startOff balloons
      * to a huge value and the read walks off into unmapped host memory.
@@ -81,7 +81,12 @@ void sub_08058004(u32 unk1, void* src, void* dest) {
     {
         extern u8 gUnk_02006F00[];
         uintptr_t srcOff = (uintptr_t)src - (uintptr_t)gUnk_02006F00;
-        if (srcOff > 0x4000u || startOff + 0x2000u > 0x4000u - srcOff)
+        /* 31 full strides plus one 64-byte row, not 32 full strides: the
+         * old 0x2000 bound rejected every nonzero scroll on the second
+         * layer, leaving its stale tilemap on screen (3DS fork E11). */
+        const u32 readBytes = 31u * 0x100u + 0x40u;
+        if (srcOff > 0x4000u || startOff > 0x4000u - srcOff ||
+            readBytes > 0x4000u - srcOff - startOff)
             return;
     }
 #endif
@@ -97,14 +102,26 @@ void sub_08058034(void) {
     u32 tmp;
     u16 *tmp2, *tmp3;
     tmp2 = gMapDataTopSpecial;
+#ifdef PC_PORT
+    /* On GBA gUnk_02006F00 immediately follows gMapDataTopSpecial in EWRAM
+     * (0x02002F00 + 0x4000), so `gMapDataTopSpecial + 0x2000` (u16) lands in
+     * gUnk_02006F00 — the buffer sub_08058004 reads. PC has separate arrays;
+     * write the alias explicitly. */
+    tmp3 = (u16*)gUnk_02006F00;
+#else
     tmp3 = gMapDataTopSpecial + 0x2000;
+#endif
     for (tmp = 0; tmp < 4; tmp++) {
         sub_08058084(tmp2, tmp3);
         tmp2 += 0x400;
         tmp3 += 0x20;
     }
     tmp2 = gMapDataTopSpecial + 0x1000;
+#ifdef PC_PORT
+    tmp3 = (u16*)(gUnk_02006F00 + 0x2000);
+#else
     tmp3 = gMapDataTopSpecial + 0x3000;
+#endif
     for (tmp = 0; tmp < 4; tmp++) {
         sub_08058084(tmp2, tmp3);
         tmp2 += 0x400;

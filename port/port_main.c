@@ -19,6 +19,9 @@
 #include "port_gba_mem.h"
 #include "port_gpu_renderer.h"
 #include "port_icon.h"
+#ifdef TMC_RA
+#include "port_ra.h"
+#endif
 #include "port_ppu.h"
 #include "port_rom.h"
 #include "port_rom_picker.h"
@@ -91,7 +94,10 @@ static void Port_LogVideoDiagnostics(void) {
 }
 
 static bool Port_InitVideo(void) {
-    const char* err = NULL;
+    /* SDL_GetError() returns a pointer into SDL's per-thread error buffer,
+     * which SDL_Quit() frees during TLS teardown. Copy it out before the
+     * quit so the diagnostics below don't read freed memory. */
+    char err[256] = "unknown error";
     const char* forcedDriver = getenv("SDL_VIDEODRIVER");
     const char* display = getenv("DISPLAY");
     const char* waylandDisplay = getenv("WAYLAND_DISPLAY");
@@ -109,7 +115,7 @@ static bool Port_InitVideo(void) {
         if (Port_TryInitVideo(NULL, "opengles2,software", false)) {
             return true;
         }
-        err = SDL_GetError();
+        SDL_strlcpy(err, SDL_GetError(), sizeof(err));
         SDL_Quit();
     }
 #endif
@@ -118,7 +124,7 @@ static bool Port_InitVideo(void) {
         if (Port_TryInitVideo(NULL, NULL, false)) {
             return true;
         }
-        err = SDL_GetError();
+        SDL_strlcpy(err, SDL_GetError(), sizeof(err));
         SDL_Quit();
     }
 
@@ -126,7 +132,7 @@ static bool Port_InitVideo(void) {
         if (Port_TryInitVideo("wayland", NULL, false)) {
             return true;
         }
-        err = SDL_GetError();
+        SDL_strlcpy(err, SDL_GetError(), sizeof(err));
         SDL_Quit();
     }
 
@@ -134,34 +140,36 @@ static bool Port_InitVideo(void) {
         if (Port_TryInitVideo("x11", NULL, false)) {
             return true;
         }
-        err = SDL_GetError();
+        SDL_strlcpy(err, SDL_GetError(), sizeof(err));
         SDL_Quit();
     }
 
     if (Port_TryInitVideo(NULL, NULL, false)) {
         return true;
     }
-    err = SDL_GetError();
+    SDL_strlcpy(err, SDL_GetError(), sizeof(err));
 
     SDL_Quit();
     if (Port_TryInitVideo("dummy", "software", true)) {
-        fprintf(stderr, "Initial SDL error: %s\n", err ? err : "unknown error");
+        fprintf(stderr, "Initial SDL error: %s\n", err);
         return true;
     }
 
     Port_LogVideoDiagnostics();
-    fprintf(stderr, "SDL video init failed: normal='%s', fallback='%s'\n", err ? err : "unknown error", SDL_GetError());
+    fprintf(stderr, "SDL video init failed: normal='%s', fallback='%s'\n", err, SDL_GetError());
     return false;
 }
 
 static void Port_InitAudio(void) {
-    const char* err = NULL;
+    /* Same lifetime hazard as Port_InitVideo: SDL_QuitSubSystem() can free
+     * the buffer SDL_GetError() points at, so snapshot it. */
+    char err[256] = "unknown error";
 
     if (SDL_InitSubSystem(SDL_INIT_AUDIO) && Port_Audio_Init()) {
         return;
     }
 
-    err = SDL_GetError();
+    SDL_strlcpy(err, SDL_GetError(), sizeof(err));
     Port_Audio_Shutdown();
     SDL_QuitSubSystem(SDL_INIT_AUDIO);
 
@@ -172,7 +180,7 @@ static void Port_InitAudio(void) {
         return;
     }
 
-    fprintf(stderr, "Audio disabled: normal='%s', fallback='%s'\n", err ? err : "unknown error", SDL_GetError());
+    fprintf(stderr, "Audio disabled: normal='%s', fallback='%s'\n", err, SDL_GetError());
     Port_Audio_Shutdown();
     SDL_QuitSubSystem(SDL_INIT_AUDIO);
     gMain.muteAudio = 1;
@@ -192,6 +200,9 @@ static void Port_InitAudio(void) {
 #define WIN32_LEAN_AND_MEAN
 #include <stdint.h>
 #include <windows.h>
+#ifndef ENABLE_VIRTUAL_TERMINAL_PROCESSING
+#define ENABLE_VIRTUAL_TERMINAL_PROCESSING 0x0004
+#endif
 
 static int s_gba_va_reserve_done;
 
@@ -326,6 +337,18 @@ static void PaintSplash(SDL_Window* window, const char* msg) {
 #endif
 
 int main(int argc, char* argv[]) {
+#ifdef _WIN32
+    /* Enable ANSI escape sequences on the Windows console for stdout+stderr. */
+    {
+        const DWORD handles[] = { STD_OUTPUT_HANDLE, STD_ERROR_HANDLE };
+        for (size_t i = 0; i < 2; ++i) {
+            HANDLE h = GetStdHandle(handles[i]);
+            DWORD mode = 0;
+            if (h != INVALID_HANDLE_VALUE && GetConsoleMode(h, &mode))
+                SetConsoleMode(h, mode | ENABLE_VIRTUAL_TERMINAL_PROCESSING);
+        }
+    }
+#endif
 
     /* Must run before any std::vector / new / malloc that could land in
      * the GBA window. Static initializers in C++ files are constructed
@@ -666,6 +689,9 @@ int main(int argc, char* argv[]) {
      * BEFORE the prelaunch frame loop runs. Idempotent + no-op if no
      * backend is available; never blocks. */
     { Port_TTS_Init(); }
+    /* Quit is exit(0) from VBlankIntrWait; without this the TTS worker is a
+     * joinable std::thread at static destruction -> std::terminate (#184). */
+    atexit(Port_TTS_Shutdown);
 
     /* Load persisted accessibility cue toggles into the cue module. */
     { Port_A11y_Init(); }
@@ -936,8 +962,24 @@ int main(int argc, char* argv[]) {
         fprintf(stderr, "Audio disabled by --no-audio flag.\n");
     } else {
         Port_InitAudio();
+        /* Stop the SDL audio thread before static destructors free the
+         * MP2K mixer it renders from (#184). Idempotent. */
+        atexit(Port_Audio_Shutdown);
         fprintf(stderr, "Audio init complete.\n");
     }
+
+    /* RetroAchievements. After Port_LoadRom (rc_client hashes gRomData to
+     * identify the game) and before AgbMain, so the first frame the engine
+     * runs already has a client. No-op unless ra_enabled is set.
+     *
+     * Shutdown goes through atexit rather than a call after AgbMain: the port
+     * normally leaves via exit(0) from VBlankIntrWait's quit path, and the
+     * handler has to run there too so in-flight unlock POSTs are flushed and
+     * the network worker joined. Port_RA_Shutdown is idempotent. */
+#ifdef TMC_RA
+    Port_RA_Init();
+    atexit(Port_RA_Shutdown);
+#endif
 
     /* Last bridging splash before the game's title fade-in takes
      * over. After this the engine drives the frame loop. */
