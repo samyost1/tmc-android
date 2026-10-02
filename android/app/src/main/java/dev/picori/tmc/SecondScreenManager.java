@@ -30,11 +30,17 @@ import android.view.Display;
 public class SecondScreenManager implements DisplayManager.DisplayListener {
     private static final String TAG = "SecondScreenManager";
 
+    private final Activity mActivity;
     private final Context mContext;
     private final DisplayManager mDisplayManager;
     private final Handler mMainHandler = new Handler(Looper.getMainLooper());
-    /** The display the game's own window is on — the one screen the panel must stay off. */
-    private final int mGameDisplayId;
+    /**
+     * The display the game's own window is on — the one screen the panel must
+     * stay off. Not fixed for the activity's lifetime: Thor's app switcher can
+     * reopen the running game on the other screen, moving the activity there
+     * without recreating it (see {@link #onGameDisplayMaybeChanged}).
+     */
+    private int mGameDisplayId = Display.INVALID_DISPLAY;
     private SecondScreenPresentation mPresentation;
     // True outside a start()..stop() window: while stopped the panel must
     // stay down no matter what messages are still in flight. Only touched on
@@ -44,23 +50,54 @@ public class SecondScreenManager implements DisplayManager.DisplayListener {
     private boolean mStopped = true;
 
     public SecondScreenManager(Activity activity) {
+        mActivity = activity;
         mContext = activity.getApplicationContext();
         mDisplayManager = (DisplayManager) mContext.getSystemService(Context.DISPLAY_SERVICE);
-        mGameDisplayId = activity.getWindowManager().getDefaultDisplay().getDisplayId();
-        // Tell native which way round the screens actually ended up. The
-        // launcher asks for a display; firmware is free to refuse and hand
-        // back a normal launch, so this is the only honest answer, and the
-        // panel's "swap screens" row needs it to know whether to read ON/OFF
-        // or RESTART. Safe here: SDLActivity.onCreate has already loaded
-        // libmain.so by the time this object is constructed.
+        updateGameDisplay();
+    }
+
+    /**
+     * Re-reads which display the game window is on. Returns true if it moved.
+     * Tells native which way round the screens actually ended up: the
+     * launcher asks for a display, but firmware is free to refuse — or, via
+     * the app switcher, to move the game later — so this is the only honest
+     * answer, and the panel's "swap screens" row needs it to know whether to
+     * read ON/OFF or RESTART. Safe from the constructor: SDLActivity.onCreate
+     * has already loaded libmain.so by then.
+     */
+    private boolean updateGameDisplay() {
+        Display display = Build.VERSION.SDK_INT >= 30
+                ? mActivity.getDisplay()
+                : mActivity.getWindowManager().getDefaultDisplay();
+        int displayId = display != null ? display.getDisplayId() : Display.DEFAULT_DISPLAY;
+        if (displayId == mGameDisplayId) {
+            return false;
+        }
+        mGameDisplayId = displayId;
         nativeSetGameOnSecondaryDisplay(mGameDisplayId != Display.DEFAULT_DISPLAY);
         Log.i(TAG, "game window is on display " + mGameDisplayId);
+        return true;
+    }
+
+    /**
+     * Called on configuration changes; moving the activity to the other
+     * screen arrives as one. Re-places the panel so it never shares the
+     * game's display.
+     */
+    public void onGameDisplayMaybeChanged() {
+        if (updateGameDisplay() && !mStopped) {
+            dismiss();
+            showOnAttachedDisplays();
+        }
     }
 
     public void start() {
         if (mDisplayManager == null) {
             return;
         }
+        // The switcher moves the activity before onStart, so place the panel
+        // by where the game is now, not where it was created.
+        updateGameDisplay();
         mStopped = false;
         mDisplayManager.registerDisplayListener(this, null);
         showOnAttachedDisplays();

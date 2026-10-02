@@ -1,5 +1,6 @@
 package dev.picori.tmc;
 
+import android.content.res.Configuration;
 import android.os.Build;
 import android.os.Bundle;
 import android.view.View;
@@ -59,6 +60,14 @@ public class TMCActivity extends SDLActivity {
         if (hasFocus) {
             applyImmersiveMode();
         }
+    }
+
+    // Moving the activity to the other screen (Thor's app switcher does this
+    // to a running game) arrives as a configuration change, not a recreate.
+    @Override
+    public void onConfigurationChanged(Configuration newConfig) {
+        super.onConfigurationChanged(newConfig);
+        mSecondScreen.onGameDisplayMaybeChanged();
     }
 
     // Returning from the launcher on the Thor does not always produce a focus
