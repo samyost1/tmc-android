@@ -26,9 +26,14 @@ static void StepperRow(const char* label, const char* id,
 
 static void DrawRibbonDisplayTab(void) {
     const bool gpuActive = Port_GPU_IsActive();
+    /* Label column sized to the longest row label so it never clips at any
+     * font scale; the indented blocks below the table align to its value
+     * column (label width + the cell padding on both sides). */
+    const float labelW = std::max(150.0f, ImGui::CalcTextSize("Decouple game speed").x);
+    const float valueX = labelW + ImGui::GetStyle().CellPadding.x * 2.0f;
 
     if (ImGui::BeginTable("##display_settings_table", 2, ImGuiTableFlags_SizingFixedFit)) {
-        ImGui::TableSetupColumn("Label", ImGuiTableColumnFlags_WidthFixed, 150.0f);
+        ImGui::TableSetupColumn("Label", ImGuiTableColumnFlags_WidthFixed, labelW);
         ImGui::TableSetupColumn("Value", ImGuiTableColumnFlags_WidthStretch);
 
         // Window scale - value captured before the buttons (read-before).
@@ -163,7 +168,7 @@ static void DrawRibbonDisplayTab(void) {
         Port_Config_BgFillColor(&r8, &g8, &b8);
         int rgb[3] = { (int)r8, (int)g8, (int)b8 };
         bool changed = false;
-        ImGui::Indent(150.0f);
+        ImGui::Indent(valueX);
         ImGui::PushItemWidth(120.0f);
         if (ImGui::SliderInt("R##bgcol_r", &rgb[0], 0, 255)) {
             changed = true;
@@ -183,7 +188,7 @@ static void DrawRibbonDisplayTab(void) {
                            ImGuiColorEditFlags_NoPicker |
                            ImGuiColorEditFlags_NoTooltip,
                            ImVec2(22, 22));
-        ImGui::Unindent(150.0f);
+        ImGui::Unindent(valueX);
         if (changed) {
             Port_Config_SetBgFillColor((uint8_t)rgb[0], (uint8_t)rgb[1], (uint8_t)rgb[2]);
         }
@@ -191,9 +196,11 @@ static void DrawRibbonDisplayTab(void) {
 
     const bool glslpSupported = gpuActive && Port_GPU_SupportsGlslpRuntime();
     if (!glslpSupported) {
-        ImGui::Indent(150.0f);
-        ImGui::TextDisabled("Shader preset: %s", gpuActive ? "(SPIR-V backend required)" : "(GPU backend required)");
-        ImGui::Unindent(150.0f);
+        ImGui::TextUnformatted("Shader preset");
+        ImGui::Indent(valueX);
+        ImGui::SameLine(ImGui::GetCursorPosX());
+        ImGui::TextDisabled("%s", gpuActive ? "(SPIR-V backend required)" : "(GPU backend required)");
+        ImGui::Unindent(valueX);
     } else {
         static std::vector<std::string> sPresetPaths;
         static std::string              sActivePreset;
@@ -244,18 +251,23 @@ static void DrawRibbonDisplayTab(void) {
             sScannedOnce = true;
         }
 
-        ImGui::Indent(150.0f);
-        ImGui::TextUnformatted("Shader preset"); ImGui::SameLine();
+        /* Label in the table's label column (under "CRT filter"); everything
+         * else, including wrapped rows and the list, in the value column. */
+        ImGui::TextUnformatted("Shader preset");
+        ImGui::Indent(valueX);
+        ImGui::SameLine(ImGui::GetCursorPosX());
         if (ImGui::Button("Off##preset")) {
             Port_GlslpRuntime_Unload();
             sActivePreset.clear();
             Port_Config_SetShaderPreset("");                  /* persist (#146) */
             Port_DebugMenu_ToastFromExternal("Shader preset off");
         }
-        ImGui::SameLine();
+        SameLineIfFits(ButtonWidth("Rescan##preset"));
         if (ImGui::Button("Rescan##preset")) refresh();
-        ImGui::SameLine();
-        ImGui::TextDisabled("(%zu found)", sPresetPaths.size());
+        char found[32];
+        std::snprintf(found, sizeof(found), "(%zu found)", sPresetPaths.size());
+        SameLineIfFits(ImGui::CalcTextSize(found).x);
+        ImGui::TextDisabled("%s", found);
 
         const bool active = Port_GlslpRuntime_IsActive() != 0;
         if (active && !sActivePreset.empty()) {
@@ -288,7 +300,7 @@ static void DrawRibbonDisplayTab(void) {
                 ImGui::EndListBox();
             }
         }
-        ImGui::Unindent(150.0f);
+        ImGui::Unindent(valueX);
     }
 
     ImGui::Separator();
@@ -301,7 +313,7 @@ static void DrawRibbonDisplayTab(void) {
             Port_PPU_ApplyWindowScale();
             Port_DebugMenu_ToastFromExternal(ws ? "Widescreen enabled" : "Widescreen disabled");
         }
-        ImGui::SameLine();
+        SameLineIfFits(CheckboxWidth("Fullscreen"));
     }
 #endif
 
@@ -310,21 +322,21 @@ static void DrawRibbonDisplayTab(void) {
         Port_PPU_ToggleFullscreen();
         Port_Config_SetFullscreen(Port_PPU_IsFullscreen());   /* persist (#146) */
     }
-    ImGui::SameLine();
+    SameLineIfFits(CheckboxWidth("Hide cursor in fullscreen"));
 
     bool hideCur = Port_Config_GetFullscreenHideCursor();
     if (ImGui::Checkbox("Hide cursor in fullscreen", &hideCur)) {
         Port_Config_SetFullscreenHideCursor(hideCur);         /* persist */
         Port_PPU_ApplyCursorVisibility();                     /* live, if already fullscreen */
     }
-    ImGui::SameLine();
+    SameLineIfFits(CheckboxWidth("VSync"));
 
     bool vsync = Port_PPU_VSyncEnabled();
     if (ImGui::Checkbox("VSync", &vsync)) {
         Port_PPU_SetVSync(vsync);
         Port_Config_SetVSync(vsync);                          /* persist (#146) */
     }
-    ImGui::SameLine();
+    SameLineIfFits(CheckboxWidth("Discord RPC"));
 
     bool drp = Port_DiscordRpc_IsEnabled();
     if (ImGui::Checkbox("Discord RPC", &drp)) {

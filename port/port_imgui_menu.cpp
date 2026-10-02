@@ -799,6 +799,27 @@ static void DrawRibbonFlagsTab(void) {
     ImGui::EndChild();
 }
 
+/* Width a Checkbox / Button with this label will take. */
+static float CheckboxWidth(const char* label) {
+    return ImGui::GetFrameHeight() + ImGui::GetStyle().ItemInnerSpacing.x + ImGui::CalcTextSize(label, nullptr, true).x;
+}
+
+static float ButtonWidth(const char* label) {
+    return ImGui::CalcTextSize(label, nullptr, true).x + ImGui::GetStyle().FramePadding.x * 2.0f;
+}
+
+/* SameLine() only when a widget nextW wide still fits on this row, so rows
+ * of checkboxes / buttons wrap instead of clipping at the window edge on
+ * narrow or scaled (2x font on Android) UIs. */
+static void SameLineIfFits(float nextW) {
+    const float rowEnd = ImGui::GetItemRectMax().x + ImGui::GetStyle().ItemSpacing.x + nextW;
+    /* After an item the cursor sits at the next line's start, so this is
+     * the content region's right edge. */
+    const float contentEnd = ImGui::GetCursorScreenPos().x + ImGui::GetContentRegionAvail().x;
+    if (rowEnd <= contentEnd)
+        ImGui::SameLine();
+}
+
 #include "port_imgui_display_tab.inc"
 
 /* Save current game to EEPROM, then drop the player back at the
@@ -1055,8 +1076,8 @@ static void DrawRibbonProfilesTab(void) {
     static int sConfirmDeleteRow = -1;
 
     if (ImGui::BeginTable("##profiles_table", 3, ImGuiTableFlags_SizingFixedFit | ImGuiTableFlags_RowBg)) {
-        ImGui::TableSetupColumn("Profile File", ImGuiTableColumnFlags_WidthFixed, 180.0f);
-        ImGui::TableSetupColumn("Status", ImGuiTableColumnFlags_WidthFixed, 100.0f);
+        ImGui::TableSetupColumn("Profile File", ImGuiTableColumnFlags_WidthFixed, ImGui::GetFontSize() * 10.0f);
+        ImGui::TableSetupColumn("Status", ImGuiTableColumnFlags_WidthFixed, ImGui::GetFontSize() * 5.5f);
         ImGui::TableSetupColumn("Actions", ImGuiTableColumnFlags_WidthStretch);
 
         for (int i = 0; i < n; ++i) {
@@ -1084,7 +1105,7 @@ static void DrawRibbonProfilesTab(void) {
                     Port_Config_SetActiveSaveProfile(names[i]);
                     Port_DebugMenu_ToastFromExternal("Profile activated - go to title to load");
                 }
-                ImGui::SameLine();
+                SameLineIfFits(ButtonWidth("Rename"));
             }
             const bool isDefault = (std::strcmp(names[i], "tmc.sav") == 0);
             if (!isDefault) {
@@ -1092,7 +1113,7 @@ static void DrawRibbonProfilesTab(void) {
                     sRenameRow = i;
                     snprintf(sRenameBuf[i], sizeof(sRenameBuf[i]), "%s", names[i]);
                 }
-                ImGui::SameLine();
+                SameLineIfFits(ButtonWidth("Delete"));
                 if (ImGui::Button("Delete"))
                     sConfirmDeleteRow = i;
             }
@@ -3071,7 +3092,7 @@ static void DrawRibbonAudioTab(void) {
     ImGui::BeginDisabled(gbaAccurate);
 
     if (ImGui::BeginTable("##audio_enhancements", 2, ImGuiTableFlags_SizingFixedFit)) {
-        ImGui::TableSetupColumn("Label", ImGuiTableColumnFlags_WidthFixed, 120.0f);
+        ImGui::TableSetupColumn("Label", ImGuiTableColumnFlags_WidthFixed); /* auto-fit to labels */
         ImGui::TableSetupColumn("Control", ImGuiTableColumnFlags_WidthStretch);
 
         // Stereo width
@@ -3116,26 +3137,25 @@ static void DrawRibbonAudioTab(void) {
                        "entry points - music and other SFX are untouched.");
     ImGui::Separator();
 
-    if (ImGui::BeginTable("##sfx_mutes", 2, ImGuiTableFlags_SizingFixedFit)) {
-        ImGui::TableSetupColumn("Left", ImGuiTableColumnFlags_WidthFixed, 220.0f);
-        ImGui::TableSetupColumn("Right", ImGuiTableColumnFlags_WidthStretch);
-
-        for (int i = 0; i < (int)AUDIO_MUTE_COUNT; ++i) {
-            if ((i % 2) == 0)
-                ImGui::TableNextRow();
-            ImGui::TableSetColumnIndex(i % 2);
-
-            bool on = Port_AudioMute_IsEnabled((AudioMuteCategory)i);
-            const char* label = Port_AudioMute_Label((AudioMuteCategory)i);
-            const char* desc = Port_AudioMute_Description((AudioMuteCategory)i);
-            if (ImGui::Checkbox(label, &on)) {
-                Port_AudioMute_SetEnabled((AudioMuteCategory)i, on);
-            }
-            if (desc && desc[0]) {
-                RandoUi_HelpTooltip(desc);
-            }
+    /* As many toggles per row as fit, so a narrow / 2x-font panel gets one
+     * per row. */
+    for (int i = 0; i < (int)AUDIO_MUTE_COUNT; ++i) {
+        bool on = Port_AudioMute_IsEnabled((AudioMuteCategory)i);
+        const char* label = Port_AudioMute_Label((AudioMuteCategory)i);
+        const char* desc = Port_AudioMute_Description((AudioMuteCategory)i);
+        const bool hasDesc = desc && desc[0];
+        if (i > 0) {
+            float w = CheckboxWidth(label);
+            if (hasDesc)
+                w += ImGui::GetStyle().ItemSpacing.x + ImGui::CalcTextSize("(?)").x;
+            SameLineIfFits(w);
         }
-        ImGui::EndTable();
+        if (ImGui::Checkbox(label, &on)) {
+            Port_AudioMute_SetEnabled((AudioMuteCategory)i, on);
+        }
+        if (hasDesc) {
+            RandoUi_HelpTooltip(desc);
+        }
     }
 }
 
@@ -3149,7 +3169,7 @@ static void DrawRibbonAccessibilityTab(void) {
     ImGui::Separator();
 
     if (ImGui::BeginTable("##tts_table", 2, ImGuiTableFlags_SizingFixedFit)) {
-        ImGui::TableSetupColumn("Label", ImGuiTableColumnFlags_WidthFixed, 100.0f);
+        ImGui::TableSetupColumn("Label", ImGuiTableColumnFlags_WidthFixed); /* auto-fit to labels */
         ImGui::TableSetupColumn("Control", ImGuiTableColumnFlags_WidthStretch);
 
         // Backend row
@@ -3244,7 +3264,9 @@ static void DrawRibbonAccessibilityTab(void) {
 
         ImGui::EndTable();
     }
+    ImGui::PushTextWrapPos(0.0f);
     ImGui::TextDisabled("Voice IDs vary by backend (espeak: 'en+f2', say: 'Samantha', SAPI: 'Microsoft David').");
+    ImGui::PopTextWrapPos();
 
     ImGui::Separator();
     if (ImGui::Button("Test voice")) {
@@ -3273,11 +3295,11 @@ static void DrawRibbonAccessibilityTab(void) {
     if (ImGui::Button("Scan surroundings (F10)")) {
         Port_A11y_ScanSurroundings();
     }
-    ImGui::SameLine();
+    SameLineIfFits(ButtonWidth("Cycle (Shift+F10)"));
     if (ImGui::Button("Cycle (Shift+F10)")) {
         Port_A11y_CycleNext();
     }
-    ImGui::SameLine();
+    SameLineIfFits(ButtonWidth("Look around (Ctrl+F10)"));
     if (ImGui::Button("Look around (Ctrl+F10)")) {
         Port_A11y_LookAround();
     }
@@ -4081,7 +4103,9 @@ static void DrawRandoFileMenuModal(void) {
 
     const ImGuiViewport* vp = ImGui::GetMainViewport();
     const float padding = 12.0f;
-    const float sidebarW = 380.0f;
+    /* Font-relative so it follows the font scale (2x on Android): a label +
+     * stepper + (?) row needs ~28 em. */
+    const float sidebarW = std::min(ImGui::GetFontSize() * 28.0f, vp->Size.x - 2 * padding);
     const float sidebarH = vp->WorkSize.y - 2 * padding;
 
     ImGui::SetNextWindowPos(ImVec2(vp->Pos.x + vp->Size.x - sidebarW - padding, vp->Pos.y + padding), ImGuiCond_Always);
@@ -4090,6 +4114,8 @@ static void DrawRandoFileMenuModal(void) {
     if (ImGui::Begin("##port_setup_sidebar", nullptr,
                      ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoCollapse |
                          ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoSavedSettings)) {
+        ImGui::PushTextWrapPos(0.0f);
+        ImGui::PushItemWidth(ImGui::GetContentRegionAvail().x * 0.45f);
 
         ImGui::TextColored(ImVec4(0.78f, 0.95f, 0.78f, 1.0f), "PORT & RANDOMIZER SETUP");
         ImGui::Separator();
@@ -4108,34 +4134,32 @@ static void DrawRandoFileMenuModal(void) {
         // 1. RANDOMIZER SETUP SECTION (Only active if enabled)
         if (randoEnabled) {
             if (ImGui::CollapsingHeader("Randomizer Setup", ImGuiTreeNodeFlags_DefaultOpen)) {
-                ImGui::SetNextItemWidth(180);
-                if (ImGui::InputText("Seed (empty = random)", Port_RandoFileMenu_SeedBuffer(),
-                                     RANDO_FILE_MENU_SEED_MAX + 1, ImGuiInputTextFlags_EnterReturnsTrue)) {
+                if (ImGui::InputTextWithHint("Seed", "empty = random", Port_RandoFileMenu_SeedBuffer(),
+                                             RANDO_FILE_MENU_SEED_MAX + 1, ImGuiInputTextFlags_EnterReturnsTrue)) {
                     Port_RandoFileMenu_SeedEdited();
                     Port_RandoFileMenu_CommitAndStart();
                 }
                 if (ImGui::IsItemEdited())
                     Port_RandoFileMenu_SeedEdited();
-                ImGui::SameLine();
+                SameLineIfFits(ButtonWidth("Randomize"));
                 if (ImGui::Button("Randomize"))
                     Port_RandoFileMenu_RandomizeSeed();
 
                 ImGui::Spacing();
                 ImGui::TextDisabled("Logic: built-in native graph (%d locations)", RANDO_LOCATION_COUNT);
                 int difficulty = Port_RandoFileMenu_Difficulty();
-                ImGui::SetNextItemWidth(160);
                 if (ImGui::Combo("Item pool", &difficulty, kRandoPoolCombo, RANDO_ITEM_POOL_COUNT)) {
                     Port_RandoFileMenu_SetDifficulty(difficulty);
                 }
                 RandoUi_HelpTooltip(kRandoPoolTooltip);
                 ImGui::Checkbox("Glitchless logic", Port_RandoFileMenu_GlitchlessLogic());
-                ImGui::SameLine();
+                SameLineIfFits(CheckboxWidth("Obscure spots"));
                 ImGui::Checkbox("Obscure spots", Port_RandoFileMenu_ObscureLocations());
-                ImGui::SameLine();
+                SameLineIfFits(CheckboxWidth("Kinstones"));
                 ImGui::Checkbox("Kinstones", Port_RandoFileMenu_ShuffleKinstones());
-                ImGui::SameLine();
+                SameLineIfFits(CheckboxWidth("Entrances"));
                 ImGui::Checkbox("Entrances", Port_RandoFileMenu_ShuffleEntrances());
-                ImGui::SameLine();
+                SameLineIfFits(CheckboxWidth("Dojos"));
                 ImGui::Checkbox("Dojos", Port_RandoFileMenu_ShuffleDojos());
                 ImGui::Checkbox("Dungeon items", Port_RandoFileMenu_ShuffleDungeonItems());
                 RandoUi_HelpTooltip("Off (default): each dungeon's map, compass, and big key stay "
@@ -4145,22 +4169,19 @@ static void DrawRandoFileMenuModal(void) {
                 RandoUi_HelpTooltip("Every permanent obstacle (trees, cracked blocks, bomb "
                                     "walls, switches, non-key doors, ...) starts pre-solved, "
                                     "matching the GBA randomizer's World Settings \"Open\".");
-                ImGui::SameLine();
+                SameLineIfFits(CheckboxWidth("Sleep warp"));
                 ImGui::Checkbox("Sleep warp", Port_RandoFileMenu_Homewarp());
                 ImGui::Checkbox("Start Sword", Port_RandoFileMenu_StartSword());
-                ImGui::SameLine();
+                SameLineIfFits(CheckboxWidth("Early Crests"));
                 ImGui::Checkbox("Early Crests", Port_RandoFileMenu_EarlyCrests());
-                ImGui::SameLine();
+                SameLineIfFits(CheckboxWidth("Fast Text"));
                 ImGui::Checkbox("Fast Text", Port_RandoFileMenu_InstantText());
 
                 static const char* kTunicColors[] = { "Green", "Red", "Blue", "Purple", "Orange", "Grey", "Random" };
                 static const char* kHeartColors[] = { "Red", "Blue", "Green", "Yellow", "Purple", "Rainbow", "Random" };
-                ImGui::SetNextItemWidth(160);
                 ImGui::Combo("Tunic color", Port_RandoFileMenu_TunicColor(), kTunicColors, 7);
-                ImGui::SetNextItemWidth(160);
                 ImGui::Combo("Heart color", Port_RandoFileMenu_HeartColor(), kHeartColors, 7);
 
-                ImGui::SetNextItemWidth(160);
                 ImGui::Combo("Accessibility", Port_RandoFileMenu_Accessibility(), kRandoAccessCombo,
                              RANDO_ACCESS_COUNT);
                 RandoUi_HelpTooltip(kRandoAccessTooltip);
@@ -4198,7 +4219,7 @@ static void DrawRandoFileMenuModal(void) {
                 if (forceOpen) {
                     /* Only show Generate/Cancel actions when the GBA state is actively
                      * waiting for input on a new file creation slot. */
-                    const float actionW = (sidebarW - 32.0f) / 2.0f;
+                    const float actionW = (ImGui::GetContentRegionAvail().x - ImGui::GetStyle().ItemSpacing.x) / 2.0f;
                     if (ImGui::Button("Generate & Start", ImVec2(actionW, 0))) {
                         Port_RandoFileMenu_CommitAndStart();
                     }
@@ -4214,6 +4235,10 @@ static void DrawRandoFileMenuModal(void) {
         } else {
             ImGui::TextDisabled("Randomizer: disabled (Vanilla game).");
         }
+
+        /* Wrap stops here: the shared ribbon tabs put (?) hints after
+         * SameLine steppers, which would wrap into slivers. */
+        ImGui::PopTextWrapPos();
 
         // 2. GENERAL PORT SETTINGS (Always available)
         if (ImGui::CollapsingHeader("Display & Video")) {
@@ -4256,11 +4281,12 @@ static void DrawRandoFileMenuModal(void) {
             }
         } else {
             /* Close button for the sidebar when opened manually */
-            if (ImGui::Button("Close Sidebar", ImVec2(-1, 30))) {
+            if (ImGui::Button("Close Sidebar", ImVec2(-1, 0))) {
                 Port_RandoFileMenu_SetSidebarOpen(false);
                 Rando_PlayCancelSfx();
             }
         }
+        ImGui::PopItemWidth();
     }
     ImGui::End();
 }
