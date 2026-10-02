@@ -1,8 +1,12 @@
 package dev.picori.tmc;
 
+import android.content.res.Configuration;
+import android.os.Build;
 import android.os.Bundle;
 import android.view.View;
 import android.view.Window;
+import android.view.WindowInsets;
+import android.view.WindowInsetsController;
 import org.libsdl.app.SDLActivity;
 
 /**
@@ -47,9 +51,9 @@ public class TMCActivity extends SDLActivity {
         mSecondScreen = new SecondScreenManager(this);
     }
 
-    // The flags are dropped by the system every time the window loses focus
-    // (notification shade, power menu, the panel's own display churn), and
-    // nothing in SDL's glue puts them back. Re-assert on the way in.
+    // The legacy flags are dropped by the system every time the window loses
+    // focus (notification shade, power menu, the panel's own display churn),
+    // and nothing in SDL's glue puts them back. Re-assert on the way in.
     @Override
     public void onWindowFocusChanged(boolean hasFocus) {
         super.onWindowFocusChanged(hasFocus);
@@ -58,12 +62,41 @@ public class TMCActivity extends SDLActivity {
         }
     }
 
+    // Moving the activity to the other screen (Thor's app switcher does this
+    // to a running game) arrives as a configuration change, not a recreate.
+    @Override
+    public void onConfigurationChanged(Configuration newConfig) {
+        super.onConfigurationChanged(newConfig);
+        mSecondScreen.onGameDisplayMaybeChanged();
+    }
+
+    // Returning from the launcher on the Thor does not always produce a focus
+    // change for this window (focus can bounce through the other display), so
+    // re-assert on resume as well.
+    @Override
+    protected void onResume() {
+        super.onResume();
+        applyImmersiveMode();
+    }
+
     private void applyImmersiveMode() {
         Window window = getWindow();
         if (window == null) {
             return;
         }
         window.getDecorView().setSystemUiVisibility(IMMERSIVE_FLAGS);
+        if (Build.VERSION.SDK_INT >= 30) {
+            // The legacy hide flags are cleared whenever the bars are revealed
+            // (app switch, launcher, swipe) and stay cleared until re-applied.
+            // The insets controller's hide request persists, so a swipe only
+            // shows the bars transiently.
+            window.setDecorFitsSystemWindows(false);
+            WindowInsetsController controller = window.getInsetsController();
+            if (controller != null) {
+                controller.setSystemBarsBehavior(WindowInsetsController.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE);
+                controller.hide(WindowInsets.Type.systemBars());
+            }
+        }
         // Arm SDL's own re-hide watchdog (SDLActivity.onSystemUiVisibilityChange
         // ignores bar reveals unless this is set). IMMERSIVE_STICKY already
         // auto-hides a swipe-revealed bar, but a bar the system raises on its

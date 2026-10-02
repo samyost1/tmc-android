@@ -45,8 +45,14 @@ public class TMCLauncherActivity extends Activity {
         super.onCreate(savedInstanceState);
 
         Intent intent = new Intent(this, TMCActivity.class);
+        // Always name the display: without one the game opens on whichever
+        // screen the launch came from, and Thor's launcher can launch from
+        // the bottom one.
         int display = swapDisplayId();
-        if (display != -1 && Build.VERSION.SDK_INT >= 26) {
+        if (display == -1) {
+            display = Display.DEFAULT_DISPLAY;
+        }
+        if (Build.VERSION.SDK_INT >= 26) {
             ActivityOptions options = ActivityOptions.makeBasic();
             options.setLaunchDisplayId(display);
             try {
