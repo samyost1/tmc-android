@@ -167,7 +167,7 @@ extern "C" void Port_ImGui_Init(SDL_Window* window, SDL_Renderer* renderer) {
      * ImGui scales the default ProggyClean upward; the resulting glyphs
      * are crisp enough at native resolution for menu use, and big
      * enough to be readable on the Deck at hand-held distance. */
-    io.FontGlobalScale = 1.4f;
+    style.FontScaleMain = 1.4f;
 #ifdef __ANDROID__
     /* Touch pass: a tablet is driven by fingers at arm's length, not a
      * pointer. Scale the whole style so every hit target clears ~48dp
@@ -181,7 +181,7 @@ extern "C" void Port_ImGui_Init(SDL_Window* window, SDL_Renderer* renderer) {
     style.FramePadding.y += 6.0f;                 /* taller rows = taller tap areas  */
     style.ItemSpacing.y += 4.0f;                  /* breathing room between rows     */
     style.TouchExtraPadding = ImVec2(6.0f, 6.0f); /* forgiving hit test */
-    io.FontGlobalScale = 2.0f;
+    style.FontScaleMain = 2.0f;
 #endif
     ImVec4* colors = style.Colors;
     /* Greens — primary accent (a deep, slightly-warm green that
