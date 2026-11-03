@@ -31,10 +31,14 @@ typedef enum {
     PORT_INPUT_SOFT_R2,
     /* One-button roll attack (port_roll_attack_macro.c). Default keyboard D. */
     PORT_INPUT_ROLL_ATTACK,
+    /* Fast-forward key/button (port_bios.c). Default keyboard Tab. */
+    PORT_INPUT_FAST_FORWARD,
     PORT_INPUT_COUNT,
 } PortInput;
 
 void Port_Config_Load(const char* path);
+bool Port_Config_GetFastForwardToggle(void);
+void Port_Config_SetFastForwardToggle(bool toggle);
 u8 Port_Config_WindowScale(void);
 const char* Port_Config_UpscaleMethod(void);
 u64 Port_Config_FrameTimeNs(void);

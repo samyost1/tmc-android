@@ -1327,6 +1327,8 @@ static const char* InputLabel(int input) {
             return "Soft slot R2";
         case PORT_INPUT_ROLL_ATTACK:
             return "Roll attack (D / R3)";
+        case PORT_INPUT_FAST_FORWARD:
+            return "Fast-forward";
         default:
             return Port_Config_InputName((PortInput)input);
     }
@@ -1347,7 +1349,7 @@ static void DrawRibbonControlsTab(void) {
             { "F10", "Speak nearby points of interest  (Shift: next, Ctrl: orient)" },
             { "F11 / Alt+Enter", "Toggle fullscreen" },
             { "F12", "Cycle the display filter / smoothing" },
-            { "Tab (hold)", "Fast-forward" },
+            { "Tab", "Fast-forward (rebindable below)" },
             { "[  ]", "Practice: set / reload practice point" },
             { "P  .", "Practice: pause / frame-advance while paused" },
             { "'  ;", "Practice: reset timer / record split" },
@@ -1449,6 +1451,16 @@ static void DrawRibbonControlsTab(void) {
             ImGui::SetTooltip("Hold a direction and press the Roll attack bind to perform a "
                               "start-of-roll attack with your best sword, regardless of A/B "
                               "equip.\nDefault: keyboard D, controller R3 (right stick click).");
+        }
+    }
+    {
+        bool toggle = Port_Config_GetFastForwardToggle();
+        if (ImGui::Checkbox("Fast-forward toggle mode", &toggle)) {
+            Port_Config_SetFastForwardToggle(toggle);
+        }
+        if (ImGui::IsItemHovered()) {
+            ImGui::SetTooltip("When enabled, pressing the Fast-forward button toggles it on and off.\n"
+                              "When disabled, fast-forward runs only while holding the button.");
         }
     }
     ImGui::Separator();

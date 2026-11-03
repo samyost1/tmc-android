@@ -34,6 +34,14 @@ static bool gQuitRequested = false;
 static bool sFastForward = false;
 static int sFrameNum = 0;
 
+bool Port_Bios_IsFastForward(void) {
+    return sFastForward;
+}
+
+void Port_Bios_SetFastForward(bool on) {
+    sFastForward = on;
+}
+
 /* Soft-reset re-entry. AgbMain arms this with setjmp() at the top of the
  * game loop; SoftReset() longjmp()s back to re-run AgbMain's init (which
  * RegisterRamResets everything except EWRAM, preserving save data) — the
@@ -134,9 +142,19 @@ static void Port_UpdateInput(void) {
              * ignore, and a stale flag would fire the frame the overlay closes. */
             Port_Config_ClearInputEdges();
             Port_SoftSlots_TickPause();
+            sFastForward = false;
             sFrameNum++;
             return;
         }
+    }
+
+    /* Fast-forward: support held or toggle mode via remappable PORT_INPUT_FAST_FORWARD. */
+    if (Port_Config_GetFastForwardToggle()) {
+        if (Port_Config_InputEdgePressed(PORT_INPUT_FAST_FORWARD)) {
+            sFastForward = !sFastForward;
+        }
+    } else {
+        sFastForward = Port_Config_InputPressed(PORT_INPUT_FAST_FORWARD);
     }
 
     for (size_t i = 0; i < sizeof(sInputMap) / sizeof(sInputMap[0]); i++) {
@@ -446,19 +464,9 @@ static void Port_PumpEvents(void) {
                     continue;
                 }
             }
-            if (e.key.key == SDLK_TAB) {
-                sFastForward = true;
-                continue;
-            }
         }
-        if (e.type == SDL_EVENT_KEY_UP && e.key.key == SDLK_TAB) {
-            sFastForward = false;
-            continue;
-        }
-        /* Fast-forward via keyboard TAB only. The previous RIGHT_TRIGGER
-         * gamepad shortcut conflicted with the default soft-slot R2 binding
-         * (port_softslots.c) — pulling the trigger would simultaneously
-         * fast-forward and fire a soft-slot item. */
+        /* Fast-forward is handled via PORT_INPUT_FAST_FORWARD (default: Tab)
+         * in Port_UpdateInput(), supporting remapping and gamepad bindings. */
 
         /* Gamepad shortcut to open the F8 debug menu: Select + Start.
          * Neither button alone is overloaded (Select opens the map in

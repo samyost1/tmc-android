@@ -70,6 +70,8 @@ const std::array<Def, PORT_INPUT_COUNT> kDefaults = { {
     /* Roll attack: keyboard D + R3 (right stick click). R3 is unused by the
      * base game and sits near the movement stick for a direction+macro press. */
     { PORT_INPUT_ROLL_ATTACK, "roll_attack", { "SDLK:0x00000064", "SDL_GAMEPAD:0x00000008" } },
+    /* Fast-forward: default keyboard Tab (0x00000009). Unassigned on gamepad by default. */
+    { PORT_INPUT_FAST_FORWARD, "fast_forward", { "SDLK:0x00000009" } },
 } };
 
 u8 sScale = 3;
@@ -223,6 +225,7 @@ bool sMenuHintSeen = false;    /* set once the F8/settings menu is first opened 
 float sMasterVolume = 1.0f;    /* game master volume [0,1]; 1.0 = unchanged */
 bool sHoldAdvanceText = false; /* hold an advance key to keep paging text */
 bool sRollAttackMacroEnabled = true;
+bool sFastForwardToggle = false; /* false = hold to fast-forward, true = toggle on/off */
 #ifdef __ANDROID__
 bool sFullscreen = true; /* no windowed mode on a handheld; avoid a visible nav bar */
 #else
@@ -366,6 +369,7 @@ const BoolCfg kBoolCfg[] = {
     { "menu_hint_seen", &sMenuHintSeen, false },
     { "hold_advance_text", &sHoldAdvanceText, false },
     { "roll_attack_macro", &sRollAttackMacroEnabled, true },
+    { "fast_forward_toggle", &sFastForwardToggle, false },
 #ifdef __ANDROID__
     { "fullscreen", &sFullscreen, true },
 #else
@@ -1098,6 +1102,16 @@ extern "C" void Port_Config_SetWidescreenEnabled(bool enabled) {
 
 extern "C" void Port_Config_ToggleWidescreen(void) {
     Port_Config_SetWidescreenEnabled(!sWidescreenEnabled);
+}
+
+extern "C" bool Port_Config_GetFastForwardToggle(void) {
+    return sFastForwardToggle;
+}
+
+extern "C" void Port_Config_SetFastForwardToggle(bool toggle) {
+    sFastForwardToggle = toggle;
+    sConfigJson["fast_forward_toggle"] = toggle;
+    SaveConfig();
 }
 
 extern "C" bool Port_Config_GetConsoleParity(void) {

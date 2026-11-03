@@ -160,6 +160,7 @@ enum {
     SS_SET_SWAP_SCREENS,  /* second_screen_swap; applied at the next launch */
     SS_SET_MAP_FOG,       /* second_screen_map_fog: hide unwalked regions (issue #13) */
     SS_SET_START_MENU,    /* game_pause_menu: Start opens the stock menu (issue #14) */
+    SS_SET_FAST_FORWARD,  /* fast_forward toggle on second screen */
     SS_SET_PORT_MENU,     /* action row: opens the F8 port menu (issue #10) */
     SS_SET_COUNT
 };
@@ -168,6 +169,8 @@ enum {
  * declares them (this file stays engine-header-free): the audio mixer's
  * live volume, the quick-save autosaver's live toggle, and the PPU's live
  * color-correction switch. All extern "C" on their defining side. */
+extern bool Port_Bios_IsFastForward(void);
+extern void Port_Bios_SetFastForward(bool on);
 extern void Port_Audio_SetMasterVolume(float volume);
 extern float Port_Audio_GetMasterVolume(void);
 extern int Port_QuickSave_AutoEnabled(void);
@@ -1789,7 +1792,7 @@ static const char* const kSettingLabels[SS_SET_COUNT] = {
     "WINDCREST PINS",    "FLOOR AUTO RETURN", "MASTER VOLUME",  "AUTOSAVE",
     "COLOR CORRECTION",  "SHOW FPS",          "HOLD TO ADVANCE TEXT",
     "PANEL BACKDROP",    "SWAP SCREENS",     "MAP FOG",        "START MENU",
-    "PORT MENU",
+    "FAST FORWARD",      "PORT MENU",
 };
 
 /* The widest value word any row can show. Every row's value chip is cut to
@@ -1871,6 +1874,7 @@ static int GetSettingState(int row, char* out, int outCap) {
         case SS_SET_AUTOSAVE: on = Port_QuickSave_AutoEnabled() != 0; break;
         case SS_SET_MAP_FOG: on = Port_Config_GetSecondScreenMapFog(); break;
         case SS_SET_START_MENU: on = Port_Config_GamePauseMenuEnabled(); break;
+        case SS_SET_FAST_FORWARD: on = Port_Bios_IsFastForward(); break;
         case SS_SET_PORT_MENU:
             /* An action, not a state: the chip names what tapping does and
              * never wears the red "active" tint. */
@@ -2627,6 +2631,9 @@ void Port_SecondScreen_OnTap(int x, int y, int longPress) {
                     /* Engine-side CheckInitPauseMenu reads the flag each
                      * time Start is pressed, so this lands immediately. */
                     Port_Config_SetGamePauseMenuEnabled(!Port_Config_GamePauseMenuEnabled());
+                    break;
+                case SS_SET_FAST_FORWARD:
+                    Port_Bios_SetFastForward(!Port_Bios_IsFastForward());
                     break;
                 case SS_SET_PORT_MENU:
                     /* Issue #10: the port menu's only trigger used to be the
