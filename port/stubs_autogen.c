@@ -94,11 +94,12 @@ static u32 PortCalcCollision(Entity* thisEntity, Entity* other) {
     PortColSettings* settings;
 
     /* Read collision settings directly from ROM at the exact offset the GBA
-     * would access.  On GBA, gCollisionMtx (0x080B7B74) is only 1210 bytes,
-     * but the code reads far beyond it into adjacent ROM data for high
-     * hitType values (e.g. deku seed hitType=0x68).  gRomData has all that
-     * data at the correct offsets. */
-    u32 romOff = COL_MTX_ROM_OFFSET + byteOff;
+     * would access.  On GBA, gCollisionMtx (0x080B7B74 on USA, 0x080B729C on EU)
+     * is only 1210 bytes, but the code reads far beyond it into adjacent ROM
+     * data for high hitType values (e.g. deku seed hitType=0x68).  gRomData has
+     * all that data at the correct offsets. */
+    u32 colMtxRomOff = (gRomOffsets && gRomOffsets->collisionMatrix) ? gRomOffsets->collisionMatrix : COL_MTX_ROM_OFFSET;
+    u32 romOff = colMtxRomOff + byteOff;
     if (gRomData && romOff + COL_MTX_ENTRY_SIZE <= gRomSize) {
         u8* entry = &gRomData[romOff];
         settings = (PortColSettings*)entry;
