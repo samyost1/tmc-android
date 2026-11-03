@@ -135,16 +135,8 @@ void PauseMenu_Variant2(void) {
             iVar1 = 0;
         } else if (gInput.newKeys & L_BUTTON) {
             iVar1 = 1;
-#ifdef PC_PORT
-            extern void Port_SecondScreen_CycleTab(int direction);
-            Port_SecondScreen_CycleTab(-1);
-#endif
         } else if (gInput.newKeys & R_BUTTON) {
             iVar1 = 2;
-#ifdef PC_PORT
-            extern void Port_SecondScreen_CycleTab(int direction);
-            Port_SecondScreen_CycleTab(1);
-#endif
         } else if (gInput.newKeys & B_BUTTON) {
             iVar1 = 3;
         }
@@ -163,6 +155,15 @@ void PauseMenu_Variant2(void) {
                         bVar5 = gMenu.field_0xc[iVar4];
                     }
                 default:
+#ifdef PC_PORT
+                    if (iVar1 == 1) {
+                        extern void Port_SecondScreen_CycleTab(int direction);
+                        Port_SecondScreen_CycleTab(-1);
+                    } else if (iVar1 == 2) {
+                        extern void Port_SecondScreen_CycleTab(int direction);
+                        Port_SecondScreen_CycleTab(1);
+                    }
+#endif
                     gPauseMenuOptions.screen2 = bVar5;
                     SoundReq(SFX_TEXTBOX_OPEN);
                     gMenu.field_0xc = NULL;

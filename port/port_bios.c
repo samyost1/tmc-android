@@ -149,12 +149,17 @@ static void Port_UpdateInput(void) {
     }
 
     /* Fast-forward: support held or toggle mode via remappable PORT_INPUT_FAST_FORWARD. */
+    static bool sPrevPhysicalFf = false;
+    bool curPhysicalFf = Port_Config_InputPressed(PORT_INPUT_FAST_FORWARD);
     if (Port_Config_GetFastForwardToggle()) {
         if (Port_Config_InputEdgePressed(PORT_INPUT_FAST_FORWARD)) {
-            sFastForward = !sFastForward;
+            Port_Bios_SetFastForward(!Port_Bios_IsFastForward());
         }
     } else {
-        sFastForward = Port_Config_InputPressed(PORT_INPUT_FAST_FORWARD);
+        if (curPhysicalFf != sPrevPhysicalFf) {
+            Port_Bios_SetFastForward(curPhysicalFf);
+            sPrevPhysicalFf = curPhysicalFf;
+        }
     }
 
     for (size_t i = 0; i < sizeof(sInputMap) / sizeof(sInputMap[0]); i++) {
@@ -989,6 +994,7 @@ void VBlankIntrWait(void) {
                      * when we break out). VSync itself paces us — EXCEPT
                      * while the overload hold (set above) is draining. */
                     if ((Port_PPU_VSyncEnabled() && sVsyncOverloadHold == 0) ||
+                        sFastForward ||
                         now + sPresentCostEmaNs <= deadline ||
                         now - sLastPresentEndNs > 100000000ULL) {
                         Port_PresentOnce(firstOfTick);

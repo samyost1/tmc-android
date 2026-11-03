@@ -2773,15 +2773,16 @@ void Port_SecondScreen_OnTap(int x, int y, int longPress) {
 
 void Port_SecondScreen_CycleTab(int direction) {
     UI_LOCK();
-    static const int tabOrder[] = { SS_TAB_QUEST, SS_TAB_MAP, SS_TAB_ITEMS, SS_TAB_SETTINGS };
-    int curIdx = 1;
-    for (int i = 0; i < 4; i++) {
+    static const int tabOrder[] = { SS_TAB_ITEMS, SS_TAB_MAP, SS_TAB_QUEST };
+    const int count = (int)(sizeof(tabOrder) / sizeof(tabOrder[0]));
+    int curIdx = 0;
+    for (int i = 0; i < count; i++) {
         if (tabOrder[i] == sUi.tab) {
             curIdx = i;
             break;
         }
     }
-    int nextIdx = (curIdx + direction + 4) % 4;
+    int nextIdx = (curIdx + direction + count) % count;
     sUi.tab = tabOrder[nextIdx];
     sUi.armedRing = 0;
     sUi.questView = SS_QUEST_MAIN;

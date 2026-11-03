@@ -267,7 +267,12 @@ static void Port_Audio_Feed(void* userdata, SDL_AudioStream* stream, int additio
            rarely-changing u8 flag, so relaxed ordering is sufficient. */
         bool mute = (__atomic_load_n(&gMain.muteAudio, __ATOMIC_RELAXED) != 0) || ffMute;
         Port_M4A_Backend_Render(buffer, (uint32_t)frames, mute);
+        static bool sWasMuted = false;
         if (!mute) {
+            if (sWasMuted) {
+                __atomic_store_n(&sFilterClearPending, 1, __ATOMIC_RELEASE);
+                sWasMuted = false;
+            }
             /* GBA-accurate mode hands the synth output straight to SDL — no
                HPF/LPF/widen/soft-clip coloring — for A/B comparison against
                hardware/mGBA. The synth-side knobs (NEAREST resampling) are set
@@ -284,6 +289,7 @@ static void Port_Audio_Feed(void* userdata, SDL_AudioStream* stream, int additio
              * DSP chain so they aren't filtered), clamped inside the mixer. */
             Port_A11yAudio_Mix(buffer, frames);
         } else {
+            sWasMuted = true;
             memset(buffer, 0, frames * PORT_AUDIO_BYTES_PER_FRAME);
         }
         SDL_PutAudioStreamData(stream, buffer, frames * PORT_AUDIO_BYTES_PER_FRAME);

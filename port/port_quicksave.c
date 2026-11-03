@@ -398,9 +398,11 @@ static int WriteSlotToDisk(int slot) {
 
     char path[64];
     SlotFilename(slot, path, sizeof(path));
-    FILE* f = fopen(path, "wb");
+    char tmpPath[72];
+    snprintf(tmpPath, sizeof(tmpPath), "%s.tmp", path);
+    FILE* f = fopen(tmpPath, "wb");
     if (!f) {
-        fprintf(stderr, "[quicksave] open %s for write failed\n", path);
+        fprintf(stderr, "[quicksave] open %s for write failed\n", tmpPath);
         return 0;
     }
     const u32 magic = MAGIC;
@@ -419,16 +421,20 @@ static int WriteSlotToDisk(int slot) {
         fwrite(&total, sizeof(total), 1, f) != 1 || fwrite(&saved_at, sizeof(saved_at), 1, f) != 1 ||
         fwrite(&entities_base, sizeof(entities_base), 1, f) != 1 ||
         fwrite(&region_tag, sizeof(region_tag), 1, f) != 1) {
-        fprintf(stderr, "[quicksave] header write failed for %s\n", path);
+        fprintf(stderr, "[quicksave] header write failed for %s\n", tmpPath);
         fclose(f);
+        remove(tmpPath);
         return 0;
     }
     const size_t written = fwrite(s->snapshot, 1, s->bytes, f);
+    fflush(f);
     fclose(f);
     if (written != s->bytes) {
-        fprintf(stderr, "[quicksave] short write %s (%zu/%zu)\n", path, written, s->bytes);
+        fprintf(stderr, "[quicksave] short write %s (%zu/%zu)\n", tmpPath, written, s->bytes);
+        remove(tmpPath);
         return 0;
     }
+    rename(tmpPath, path);
     return 1;
 }
 

@@ -1121,11 +1121,16 @@ extern "C" void Port_Config_SetFastForwardToggle(bool toggle) {
 }
 
 extern "C" float Port_Config_GetFastForwardSpeed(void) {
-    return sFastForwardSpeed;
+    uint32_t val = __atomic_load_n(reinterpret_cast<const uint32_t*>(&sFastForwardSpeed), __ATOMIC_RELAXED);
+    float result;
+    memcpy(&result, &val, sizeof(result));
+    return result;
 }
 
 extern "C" void Port_Config_SetFastForwardSpeed(float speed) {
-    sFastForwardSpeed = speed;
+    uint32_t val;
+    memcpy(&val, &speed, sizeof(val));
+    __atomic_store_n(reinterpret_cast<uint32_t*>(&sFastForwardSpeed), val, __ATOMIC_RELAXED);
     sConfigJson["fast_forward_speed"] = speed;
     SaveConfig();
 }
