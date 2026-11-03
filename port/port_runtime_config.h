@@ -39,6 +39,12 @@ typedef enum {
 void Port_Config_Load(const char* path);
 bool Port_Config_GetFastForwardToggle(void);
 void Port_Config_SetFastForwardToggle(bool toggle);
+float Port_Config_GetFastForwardSpeed(void);
+void Port_Config_SetFastForwardSpeed(float speed);
+bool Port_Config_GetAutoSaveOnExit(void);
+void Port_Config_SetAutoSaveOnExit(bool enable);
+bool Port_Config_GetAutoLoadOnStartup(void);
+void Port_Config_SetAutoLoadOnStartup(bool enable);
 u8 Port_Config_WindowScale(void);
 const char* Port_Config_UpscaleMethod(void);
 u64 Port_Config_FrameTimeNs(void);

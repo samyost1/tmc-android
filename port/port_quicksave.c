@@ -100,9 +100,10 @@ static StateRegion sRegions[] = {
 };
 
 #define NUM_REGIONS (sizeof(sRegions) / sizeof(sRegions[0]))
-#define NUM_SLOTS 8 /* 0..4 manual + 5..7 auto-save ring */
+#define NUM_SLOTS 9 /* 0..4 manual + 5..7 auto-save ring + 8 auto-resume */
 #define AUTO_SLOT_BASE 5
 #define NUM_AUTO_SLOTS 3
+#define AUTO_RESUME_SLOT 8
 #define MAGIC 0x53434D54u /* "TMCS" little-endian */
 #define VERSION                                         \
     6u /* v2: header carries gEntities base address for \
@@ -377,7 +378,9 @@ static u32 ActiveRegionTag(void) {
 
 static void SlotFilename(int slot, char* out, size_t cap) {
     const char* prefix = REGION_IS_EU ? "state_eu" : REGION_IS_JP ? "state_jp" : "state";
-    if (slot >= AUTO_SLOT_BASE) {
+    if (slot == AUTO_RESUME_SLOT) {
+        snprintf(out, cap, "%s_resume.bin", prefix);
+    } else if (slot >= AUTO_SLOT_BASE && slot < AUTO_SLOT_BASE + NUM_AUTO_SLOTS) {
         snprintf(out, cap, "%s_auto_%d.bin", prefix, slot - AUTO_SLOT_BASE);
     } else if (slot == 0) {
         snprintf(out, cap, "%s_quick.bin", prefix);
@@ -630,6 +633,20 @@ int Port_QuickLoad(void) {
 }
 int Port_QuickSave_HasSnapshot(void) {
     return Port_QuickSave_HasSlot(0);
+}
+
+int Port_QuickSave_SaveAutoResume(void) {
+    if (gMain.task != TASK_GAME)
+        return 0;
+    return Port_QuickSave_SaveSlot(AUTO_RESUME_SLOT);
+}
+
+int Port_QuickSave_LoadAutoResume(void) {
+    return Port_QuickSave_LoadSlot(AUTO_RESUME_SLOT);
+}
+
+int Port_QuickSave_HasAutoResume(void) {
+    return Port_QuickSave_HasSlot(AUTO_RESUME_SLOT);
 }
 
 /* Auto-save — call once per frame from VBlankIntrWait. Saves to the

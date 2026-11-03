@@ -261,14 +261,15 @@ static void Port_PumpEvents(void) {
                 continue;
             }
         }
-        if (e.type == SDL_EVENT_QUIT) {
-            /* Route the close-button (X) / OS-quit signal through the
-             * ImGui modal first so users get a chance to save. The
-             * modal sets Port_ImGui_QuitConfirmed() once the user
-             * picks Save&Quit or Quit-Without-Saving; the per-frame
-             * check below promotes that into gQuitRequested. */
-            Port_ImGui_RequestQuitModal();
-            continue;
+        if (e.type == SDL_EVENT_QUIT || e.type == SDL_EVENT_TERMINATING || e.type == SDL_EVENT_WILL_ENTER_BACKGROUND) {
+            if (Port_Config_GetAutoSaveOnExit()) {
+                extern int Port_QuickSave_SaveAutoResume(void);
+                Port_QuickSave_SaveAutoResume();
+            }
+            if (e.type == SDL_EVENT_QUIT) {
+                Port_ImGui_RequestQuitModal();
+                continue;
+            }
         }
         if (Port_RandoFileMenu_IsOpen()) {
             /* The ImGui modal owns the randomizer-setup input (the event was
@@ -526,6 +527,24 @@ static void Port_PumpEvents(void) {
                             break;
                     }
                 }
+            }
+        }
+
+        if (Port_DebugMenu_IsOpen() && e.type == SDL_EVENT_GAMEPAD_BUTTON_DOWN) {
+            int key = 0;
+            switch (e.gbutton.button) {
+                case SDL_GAMEPAD_BUTTON_DPAD_UP: key = SDLK_UP; break;
+                case SDL_GAMEPAD_BUTTON_DPAD_DOWN: key = SDLK_DOWN; break;
+                case SDL_GAMEPAD_BUTTON_DPAD_LEFT: key = SDLK_LEFT; break;
+                case SDL_GAMEPAD_BUTTON_DPAD_RIGHT: key = SDLK_RIGHT; break;
+                case SDL_GAMEPAD_BUTTON_SOUTH: key = SDLK_RETURN; break;
+                case SDL_GAMEPAD_BUTTON_EAST: key = SDLK_ESCAPE; break;
+                case SDL_GAMEPAD_BUTTON_LEFT_SHOULDER: key = SDLK_LEFT; break;
+                case SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER: key = SDLK_RIGHT; break;
+                default: break;
+            }
+            if (key != 0 && Port_DebugMenu_HandleKey(key)) {
+                continue;
             }
         }
 
@@ -842,7 +861,22 @@ void VBlankIntrWait(void) {
                 lastFrameNs = SDL_GetTicksNS();
             }
         } else {
-            lastFrameNs = SDL_GetTicksNS();
+            float speed = Port_Config_GetFastForwardSpeed();
+            if (speed > 1.0f) {
+                u64 base = Port_Config_FrameTimeNs() ? Port_Config_FrameTimeNs() : 16666667ULL;
+                u64 frameTimeNs = (u64)((double)base / speed);
+                u64 deadline = lastFrameNs + frameTimeNs;
+                u64 now = SDL_GetTicksNS();
+                if (now > deadline + frameTimeNs) {
+                    deadline = now;
+                }
+                if (now < deadline) {
+                    SDL_DelayPrecise(deadline - now);
+                }
+                lastFrameNs = deadline;
+            } else {
+                lastFrameNs = SDL_GetTicksNS();
+            }
         }
     } else {
         /* ---- Decoupled pacing: the engine ticks on a fixed grid
@@ -856,7 +890,8 @@ void VBlankIntrWait(void) {
          * an engine tick. ---- */
         u64 entryNs = SDL_GetTicksNS();
         u32 targetFps = Port_Config_TargetFps();
-        bool uncappedTicks = sFastForward || targetFps == 0;
+        float ffSpeed = Port_Config_GetFastForwardSpeed();
+        bool uncappedTicks = (sFastForward && ffSpeed <= 1.0f) || targetFps == 0;
         u64 tickPeriodNs = 0;
         u64 renderPeriodNs;
         u64 now;
@@ -869,12 +904,17 @@ void VBlankIntrWait(void) {
         }
 
         if (!uncappedTicks) {
-            tickPeriodNs = Port_Config_TickTimeNs();
-            /* Practice slow-motion stretches the tick period only; presents
-             * keep their real-time cadence, so slow-mo stays visually fluid. */
-            float sm = Port_Config_GetPracticeSlowmo();
-            if (sm > 0.0f && sm < 0.999f) {
-                tickPeriodNs = (u64)((double)tickPeriodNs / sm);
+            if (sFastForward && ffSpeed > 1.0f) {
+                u64 base = Port_Config_TickTimeNs() ? Port_Config_TickTimeNs() : 16666667ULL;
+                tickPeriodNs = (u64)((double)base / ffSpeed);
+            } else {
+                tickPeriodNs = Port_Config_TickTimeNs();
+                /* Practice slow-motion stretches the tick period only; presents
+                 * keep their real-time cadence, so slow-mo stays visually fluid. */
+                float sm = Port_Config_GetPracticeSlowmo();
+                if (sm > 0.0f && sm < 0.999f) {
+                    tickPeriodNs = (u64)((double)tickPeriodNs / sm);
+                }
             }
         }
         /* Render cadence. During fast-forward / uncapped ticks the preset
@@ -1044,12 +1084,35 @@ void VBlankIntrWait(void) {
         gQuitRequested = true;
 
     if (gQuitRequested) {
+        if (Port_Config_GetAutoSaveOnExit()) {
+            extern int Port_QuickSave_SaveAutoResume(void);
+            Port_QuickSave_SaveAutoResume();
+        }
         exit(0);
     }
 
     Port_PumpEvents();
     Port_UpdateInput();
     Port_TestInputTick(gMain.ticks);
+
+    /* Auto-load state on startup (if enabled and resume save exists). */
+    {
+        static bool sAutoResumeDone = false;
+        if (!sAutoResumeDone) {
+            sAutoResumeDone = true;
+            if (Port_Config_GetAutoLoadOnStartup()) {
+                extern int Port_QuickSave_HasAutoResume(void);
+                extern int Port_QuickSave_LoadAutoResume(void);
+                if (Port_QuickSave_HasAutoResume()) {
+                    if (Port_QuickSave_LoadAutoResume()) {
+                        fprintf(stderr, "[autosave] auto-loaded resume state on startup\n");
+                        extern void Port_DebugMenu_ToastFromExternal(const char*);
+                        Port_DebugMenu_ToastFromExternal("Auto-resume loaded");
+                    }
+                }
+            }
+        }
+    }
 
     /* Speedrun practice: advance the IGT frame counter and sample the input
      * display. After Port_UpdateInput() so the sampled mask is this frame's. */

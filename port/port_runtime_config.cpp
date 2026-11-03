@@ -226,6 +226,9 @@ float sMasterVolume = 1.0f;    /* game master volume [0,1]; 1.0 = unchanged */
 bool sHoldAdvanceText = false; /* hold an advance key to keep paging text */
 bool sRollAttackMacroEnabled = true;
 bool sFastForwardToggle = false; /* false = hold to fast-forward, true = toggle on/off */
+float sFastForwardSpeed = 0.0f;  /* 0.0 = uncapped */
+bool sAutoSaveOnExit = true;     /* auto-save state on exit/quit/background */
+bool sAutoLoadOnStartup = true;  /* auto-load state on game launch */
 #ifdef __ANDROID__
 bool sFullscreen = true; /* no windowed mode on a handheld; avoid a visible nav bar */
 #else
@@ -393,6 +396,8 @@ const BoolCfg kBoolCfg[] = {
     { "debug_flag_notifications", &sDebugFlagNotifications, false },
     { "ra_enabled", &sRaEnabled, false },
     { "ra_notifications", &sRaNotifications, true },
+    { "autosave_on_exit", &sAutoSaveOnExit, true },
+    { "autoload_on_startup", &sAutoLoadOnStartup, true },
 };
 const IntCfg kIntCfg[] = {
     { "preferred_region", &sPreferredRegion, -1 },      { "preferred_language", &sPreferredLanguage, -1 },
@@ -419,6 +424,7 @@ const FloatCfg kFloatCfg[] = {
     { "master_volume", &sMasterVolume, 1.0 },
     { "analog_deadzone", &sAnalogDeadzone, 0.30 },
     { "analog_cardinal_snap", &sAnalogCardinalSnap, 12.0 },
+    { "fast_forward_speed", &sFastForwardSpeed, 0.0 },
 };
 const ScaleCfg kScaleCfg[] = {
     { "window_scale", &sScale, 3, 1, 10 },
@@ -1111,6 +1117,36 @@ extern "C" bool Port_Config_GetFastForwardToggle(void) {
 extern "C" void Port_Config_SetFastForwardToggle(bool toggle) {
     sFastForwardToggle = toggle;
     sConfigJson["fast_forward_toggle"] = toggle;
+    SaveConfig();
+}
+
+extern "C" float Port_Config_GetFastForwardSpeed(void) {
+    return sFastForwardSpeed;
+}
+
+extern "C" void Port_Config_SetFastForwardSpeed(float speed) {
+    sFastForwardSpeed = speed;
+    sConfigJson["fast_forward_speed"] = speed;
+    SaveConfig();
+}
+
+extern "C" bool Port_Config_GetAutoSaveOnExit(void) {
+    return sAutoSaveOnExit;
+}
+
+extern "C" void Port_Config_SetAutoSaveOnExit(bool enable) {
+    sAutoSaveOnExit = enable;
+    sConfigJson["autosave_on_exit"] = enable;
+    SaveConfig();
+}
+
+extern "C" bool Port_Config_GetAutoLoadOnStartup(void) {
+    return sAutoLoadOnStartup;
+}
+
+extern "C" void Port_Config_SetAutoLoadOnStartup(bool enable) {
+    sAutoLoadOnStartup = enable;
+    sConfigJson["autoload_on_startup"] = enable;
     SaveConfig();
 }
 

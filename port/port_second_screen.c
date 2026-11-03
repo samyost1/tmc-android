@@ -161,6 +161,9 @@ enum {
     SS_SET_MAP_FOG,       /* second_screen_map_fog: hide unwalked regions (issue #13) */
     SS_SET_START_MENU,    /* game_pause_menu: Start opens the stock menu (issue #14) */
     SS_SET_FAST_FORWARD,  /* fast_forward toggle on second screen */
+    SS_SET_FAST_FORWARD_SPEED, /* fast_forward max speed limit */
+    SS_SET_AUTOSAVE_EXIT, /* auto-save on exit */
+    SS_SET_AUTOLOAD_START, /* auto-load on start */
     SS_SET_PORT_MENU,     /* action row: opens the F8 port menu (issue #10) */
     SS_SET_COUNT
 };
@@ -171,6 +174,12 @@ enum {
  * color-correction switch. All extern "C" on their defining side. */
 extern bool Port_Bios_IsFastForward(void);
 extern void Port_Bios_SetFastForward(bool on);
+extern float Port_Config_GetFastForwardSpeed(void);
+extern void Port_Config_SetFastForwardSpeed(float speed);
+extern bool Port_Config_GetAutoSaveOnExit(void);
+extern void Port_Config_SetAutoSaveOnExit(bool enable);
+extern bool Port_Config_GetAutoLoadOnStartup(void);
+extern void Port_Config_SetAutoLoadOnStartup(bool enable);
 extern void Port_Audio_SetMasterVolume(float volume);
 extern float Port_Audio_GetMasterVolume(void);
 extern int Port_QuickSave_AutoEnabled(void);
@@ -1792,7 +1801,8 @@ static const char* const kSettingLabels[SS_SET_COUNT] = {
     "WINDCREST PINS",    "FLOOR AUTO RETURN", "MASTER VOLUME",  "AUTOSAVE",
     "COLOR CORRECTION",  "SHOW FPS",          "HOLD TO ADVANCE TEXT",
     "PANEL BACKDROP",    "SWAP SCREENS",     "MAP FOG",        "START MENU",
-    "FAST FORWARD",      "PORT MENU",
+    "FAST FORWARD",      "FF SPEED",          "SAVE ON EXIT",   "LOAD ON START",
+    "PORT MENU",
 };
 
 /* The widest value word any row can show. Every row's value chip is cut to
@@ -1875,6 +1885,18 @@ static int GetSettingState(int row, char* out, int outCap) {
         case SS_SET_MAP_FOG: on = Port_Config_GetSecondScreenMapFog(); break;
         case SS_SET_START_MENU: on = Port_Config_GamePauseMenuEnabled(); break;
         case SS_SET_FAST_FORWARD: on = Port_Bios_IsFastForward(); break;
+        case SS_SET_FAST_FORWARD_SPEED: {
+            float sp = Port_Config_GetFastForwardSpeed();
+            if (sp <= 1.0f) {
+                snprintf(out, (size_t)outCap, "MAX");
+                return 0;
+            } else {
+                snprintf(out, (size_t)outCap, "%.0fX", sp);
+                return 1;
+            }
+        }
+        case SS_SET_AUTOSAVE_EXIT: on = Port_Config_GetAutoSaveOnExit(); break;
+        case SS_SET_AUTOLOAD_START: on = Port_Config_GetAutoLoadOnStartup(); break;
         case SS_SET_PORT_MENU:
             /* An action, not a state: the chip names what tapping does and
              * never wears the red "active" tint. */
@@ -2635,6 +2657,23 @@ void Port_SecondScreen_OnTap(int x, int y, int longPress) {
                 case SS_SET_FAST_FORWARD:
                     Port_Bios_SetFastForward(!Port_Bios_IsFastForward());
                     break;
+                case SS_SET_FAST_FORWARD_SPEED: {
+                    float sp = Port_Config_GetFastForwardSpeed();
+                    if (sp <= 1.0f) sp = 2.0f;
+                    else if (sp <= 2.2f) sp = 3.0f;
+                    else if (sp <= 3.2f) sp = 4.0f;
+                    else if (sp <= 4.2f) sp = 5.0f;
+                    else if (sp <= 5.2f) sp = 8.0f;
+                    else sp = 0.0f;
+                    Port_Config_SetFastForwardSpeed(sp);
+                    break;
+                }
+                case SS_SET_AUTOSAVE_EXIT:
+                    Port_Config_SetAutoSaveOnExit(!Port_Config_GetAutoSaveOnExit());
+                    break;
+                case SS_SET_AUTOLOAD_START:
+                    Port_Config_SetAutoLoadOnStartup(!Port_Config_GetAutoLoadOnStartup());
+                    break;
                 case SS_SET_PORT_MENU:
                     /* Issue #10: the port menu's only trigger used to be the
                      * [=] chip pinned over the game. Opening it from here is
@@ -2730,6 +2769,23 @@ void Port_SecondScreen_OnTap(int x, int y, int longPress) {
             UI_UNLOCK();
             break;
     }
+}
+
+void Port_SecondScreen_CycleTab(int direction) {
+    UI_LOCK();
+    static const int tabOrder[] = { SS_TAB_QUEST, SS_TAB_MAP, SS_TAB_ITEMS, SS_TAB_SETTINGS };
+    int curIdx = 1;
+    for (int i = 0; i < 4; i++) {
+        if (tabOrder[i] == sUi.tab) {
+            curIdx = i;
+            break;
+        }
+    }
+    int nextIdx = (curIdx + direction + 4) % 4;
+    sUi.tab = tabOrder[nextIdx];
+    sUi.armedRing = 0;
+    sUi.questView = SS_QUEST_MAIN;
+    UI_UNLOCK();
 }
 
 /* ------------------------------------------------------------------ */

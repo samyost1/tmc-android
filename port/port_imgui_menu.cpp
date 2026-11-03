@@ -1098,6 +1098,27 @@ static void DrawRibbonSavesTab(void) {
             ImGui::EndTooltip();
         }
     }
+    {
+        bool autoExit = Port_Config_GetAutoSaveOnExit();
+        if (ImGui::Checkbox("Auto-save on exit", &autoExit)) {
+            Port_Config_SetAutoSaveOnExit(autoExit);
+        }
+        ImGui::SameLine();
+        ImGui::TextDisabled("(?)");
+        if (ImGui::IsItemHovered()) {
+            ImGui::SetTooltip("Automatically saves the game state when the app is closed, quit, or placed in background.");
+        }
+        ImGui::SameLine(220);
+        bool autoStartup = Port_Config_GetAutoLoadOnStartup();
+        if (ImGui::Checkbox("Auto-load on startup", &autoStartup)) {
+            Port_Config_SetAutoLoadOnStartup(autoStartup);
+        }
+        ImGui::SameLine();
+        ImGui::TextDisabled("(?)");
+        if (ImGui::IsItemHovered()) {
+            ImGui::SetTooltip("Automatically restores the last auto-saved state when the game starts.");
+        }
+    }
     ImGui::Separator();
 
     /* Slot grid: each slot is one row with Save / Load buttons + timestamp. */
@@ -1461,6 +1482,21 @@ static void DrawRibbonControlsTab(void) {
         if (ImGui::IsItemHovered()) {
             ImGui::SetTooltip("When enabled, pressing the Fast-forward button toggles it on and off.\n"
                               "When disabled, fast-forward runs only while holding the button.");
+        }
+        float speed = Port_Config_GetFastForwardSpeed();
+        char speedBuf[32];
+        if (speed <= 1.0f) {
+            std::snprintf(speedBuf, sizeof(speedBuf), "Uncapped (Unlimited)");
+        } else {
+            std::snprintf(speedBuf, sizeof(speedBuf), "%.1fx", speed);
+        }
+        if (ImGui::SliderFloat("Fast-forward speed limit", &speed, 1.0f, 10.0f, speedBuf)) {
+            if (speed < 1.25f)
+                speed = 0.0f;
+            Port_Config_SetFastForwardSpeed(speed);
+        }
+        if (ImGui::IsItemHovered()) {
+            ImGui::SetTooltip("Set maximum speedup multiplier for fast-forward (1.5x up to 10x, or Uncapped).");
         }
     }
     ImGui::Separator();
@@ -3798,77 +3834,76 @@ static void DrawRibbon(void) {
         }
         ImGui::PopStyleColor(3);
 
-        if (ImGui::BeginTabBar("##ribbonTabs", ImGuiTabBarFlags_None)) {
-            if (ImGui::BeginTabItem("Items")) {
-                DrawRibbonItemsTab();
-                ImGui::EndTabItem();
-            }
-            if (ImGui::BeginTabItem("Display")) {
-                DrawRibbonDisplayTab();
-                ImGui::EndTabItem();
-            }
-            if (ImGui::BeginTabItem("Saves")) {
-                DrawRibbonSavesTab();
-                ImGui::EndTabItem();
-            }
-            if (ImGui::BeginTabItem("Profiles")) {
-                DrawRibbonProfilesTab();
-                ImGui::EndTabItem();
-            }
-            if (ImGui::BeginTabItem("Equip")) {
-                DrawRibbonEquipTab();
-                ImGui::EndTabItem();
-            }
-            if (ImGui::BeginTabItem("Controls")) {
-                DrawRibbonControlsTab();
-                ImGui::EndTabItem();
-            }
-            if (ImGui::BeginTabItem("Warp")) {
-                DrawRibbonWarpTab();
-                ImGui::EndTabItem();
-            }
-            if (ImGui::BeginTabItem("Entities")) {
-                DrawRibbonEntitiesTab();
-                ImGui::EndTabItem();
-            }
-            if (ImGui::BeginTabItem("Flags")) {
-                DrawRibbonFlagsTab();
-                ImGui::EndTabItem();
-            }
-            if (ImGui::BeginTabItem("Memory")) {
-                DrawRibbonMemoryTab();
-                ImGui::EndTabItem();
-            }
-            if ((!Rando_IsInGameplay() || Rando_IsActive()) && ImGui::BeginTabItem("Randomizer")) {
-                DrawRibbonRandomizerTab();
-                ImGui::EndTabItem();
-            }
-            if (ImGui::BeginTabItem("Audio")) {
-                DrawRibbonAudioTab();
-                ImGui::EndTabItem();
-            }
-            if (ImGui::BeginTabItem("Accessibility")) {
-                DrawRibbonAccessibilityTab();
-                ImGui::EndTabItem();
-            }
-            if (ImGui::BeginTabItem("Reborn")) {
-                DrawRibbonRebornTab();
-                ImGui::EndTabItem();
-            }
-            if (ImGui::BeginTabItem("Practice")) {
-                DrawRibbonPracticeTab();
-                ImGui::EndTabItem();
-            }
-            if (ImGui::BeginTabItem("Map Editor")) {
-                DrawRibbonMapEditorTab();
-                ImGui::EndTabItem();
-            }
+        struct RibbonTabDef {
+            const char* name;
+            void (*draw)(void);
+            bool visible;
+        };
+
+        const RibbonTabDef tabs[] = {
+            { "Items", DrawRibbonItemsTab, true },
+            { "Display", DrawRibbonDisplayTab, true },
+            { "Saves", DrawRibbonSavesTab, true },
+            { "Profiles", DrawRibbonProfilesTab, true },
+            { "Equip", DrawRibbonEquipTab, true },
+            { "Controls", DrawRibbonControlsTab, true },
+            { "Warp", DrawRibbonWarpTab, true },
+            { "Entities", DrawRibbonEntitiesTab, true },
+            { "Flags", DrawRibbonFlagsTab, true },
+            { "Memory", DrawRibbonMemoryTab, true },
+            { "Randomizer", DrawRibbonRandomizerTab, (!Rando_IsInGameplay() || Rando_IsActive()) },
+            { "Audio", DrawRibbonAudioTab, true },
+            { "Accessibility", DrawRibbonAccessibilityTab, true },
+            { "Reborn", DrawRibbonRebornTab, true },
+            { "Practice", DrawRibbonPracticeTab, true },
+            { "Map Editor", DrawRibbonMapEditorTab, true },
 #ifdef TMC_RA
-            if (ImGui::BeginTabItem("Achievements")) {
-                Port_RA_UI_DrawTab();
-                ImGui::EndTabItem();
-            }
+            { "Achievements", Port_RA_UI_DrawTab, true },
 #endif
+        };
+        const int tabCount = (int)(sizeof(tabs) / sizeof(tabs[0]));
+
+        static int sActiveTabIdx = 0;
+        static bool sTabSelectRequested = false;
+
+        static bool sPrevL = false;
+        static bool sPrevR = false;
+        bool curL = Port_Config_InputPressed(PORT_INPUT_L) ||
+                    ImGui::IsKeyPressed(ImGuiKey_GamepadL1) ||
+                    ImGui::IsKeyPressed(ImGuiKey_PageUp) ||
+                    (!Port_ImGui_WantsTextInput() && ImGui::IsKeyPressed(ImGuiKey_Q));
+        bool curR = Port_Config_InputPressed(PORT_INPUT_R) ||
+                    ImGui::IsKeyPressed(ImGuiKey_GamepadR1) ||
+                    ImGui::IsKeyPressed(ImGuiKey_PageDown) ||
+                    (!Port_ImGui_WantsTextInput() && ImGui::IsKeyPressed(ImGuiKey_E));
+        bool pressL = curL && !sPrevL;
+        bool pressR = curR && !sPrevR;
+        sPrevL = curL;
+        sPrevR = curR;
+
+        if (pressL) {
+            do {
+                sActiveTabIdx = (sActiveTabIdx - 1 + tabCount) % tabCount;
+            } while (!tabs[sActiveTabIdx].visible);
+            sTabSelectRequested = true;
+        } else if (pressR) {
+            do {
+                sActiveTabIdx = (sActiveTabIdx + 1) % tabCount;
+            } while (!tabs[sActiveTabIdx].visible);
+            sTabSelectRequested = true;
+        }
+
+        if (ImGui::BeginTabBar("##ribbonTabs", ImGuiTabBarFlags_None)) {
+            for (int i = 0; i < tabCount; i++) {
+                if (!tabs[i].visible) continue;
+                ImGuiTabItemFlags flags = (sTabSelectRequested && i == sActiveTabIdx) ? ImGuiTabItemFlags_SetSelected : 0;
+                if (ImGui::BeginTabItem(tabs[i].name, nullptr, flags)) {
+                    sActiveTabIdx = i;
+                    tabs[i].draw();
+                    ImGui::EndTabItem();
+                }
+            }
+            sTabSelectRequested = false;
             ImGui::EndTabBar();
         }
         /* Footer with the mode toggle + hotkey hint. */
@@ -3880,7 +3915,7 @@ static void DrawRibbon(void) {
         }
         ImGui::SameLine();
         ImGui::TextDisabled("(F8 or Select+Start also toggles)");
-        ImGui::TextDisabled("F5/F6 quicksave/load   F9 bug report   -   see the Controls tab for all hotkeys");
+        ImGui::TextDisabled("L / R (or Q / E) switch tabs   F5/F6 quicksave/load   F9 bug report   -   see Controls tab for hotkeys");
     }
     ImGui::End();
     ImGui::PopStyleVar();

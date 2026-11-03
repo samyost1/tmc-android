@@ -72,6 +72,9 @@ int Port_SecondScreen_HasSurface(void);
  * harness can drive the same layout the device shows. */
 void Port_SecondScreen_OnTap(int x, int y, int longPress);
 
+/* Cycle second screen tabs with shoulder buttons or menu navigation */
+void Port_SecondScreen_CycleTab(int direction);
+
 /* Which way round the two screens ended up this launch: nonzero when the
  * game's own window is on a secondary display and this panel therefore
  * owns the main one (the "swap screens" setting, applied by the Android
