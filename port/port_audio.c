@@ -4,8 +4,11 @@
 #include "port_m4a_backend.h"
 #include "port_a11y_audio.h"
 #include "port_debug_verbose.h"
+#include "port_runtime_config.h"
 
 #include <math.h>
+
+extern bool Port_Bios_IsFastForward(void);
 
 enum {
     PORT_AUDIO_SAMPLE_RATE = 48000,
@@ -250,25 +253,39 @@ static void Port_Audio_Feed(void* userdata, SDL_AudioStream* stream, int additio
             frames = 1024;
         }
 
+        /* Fast-forward mute: mute audio during fast-forward at 4x or uncapped (MAX) */
+        bool ffMute = false;
+        if (Port_Bios_IsFastForward()) {
+            float sp = Port_Config_GetFastForwardSpeed();
+            if (sp <= 1.0f || sp >= 3.9f) {
+                ffMute = true;
+            }
+        }
+
         /* gMain.muteAudio is written on the main thread; read it with a relaxed
            atomic load here on the SDL audio thread to avoid a data race. It is a
            rarely-changing u8 flag, so relaxed ordering is sufficient. */
-        Port_M4A_Backend_Render(buffer, (uint32_t)frames, __atomic_load_n(&gMain.muteAudio, __ATOMIC_RELAXED) != 0);
-        /* GBA-accurate mode hands the synth output straight to SDL — no
-           HPF/LPF/widen/soft-clip coloring — for A/B comparison against
-           hardware/mGBA. The synth-side knobs (NEAREST resampling) are set
-           separately via the backend. */
-        if (!__atomic_load_n(&sGbaAccurate, __ATOMIC_ACQUIRE)) {
-            Port_Audio_PostProcess(buffer, frames);
-        } else {
-            /* Emulate 9-bit PWM DAC quantization of GBA hardware (SOUNDBIAS=9). */
-            for (int i = 0; i < frames * PORT_AUDIO_CHANNELS; ++i) {
-                buffer[i] = (int16_t)((buffer[i] / 128) * 128);
+        bool mute = (__atomic_load_n(&gMain.muteAudio, __ATOMIC_RELAXED) != 0) || ffMute;
+        Port_M4A_Backend_Render(buffer, (uint32_t)frames, mute);
+        if (!mute) {
+            /* GBA-accurate mode hands the synth output straight to SDL — no
+               HPF/LPF/widen/soft-clip coloring — for A/B comparison against
+               hardware/mGBA. The synth-side knobs (NEAREST resampling) are set
+               separately via the backend. */
+            if (!__atomic_load_n(&sGbaAccurate, __ATOMIC_ACQUIRE)) {
+                Port_Audio_PostProcess(buffer, frames);
+            } else {
+                /* Emulate 9-bit PWM DAC quantization of GBA hardware (SOUNDBIAS=9). */
+                for (int i = 0; i < frames * PORT_AUDIO_CHANNELS; ++i) {
+                    buffer[i] = (int16_t)((buffer[i] / 128) * 128);
+                }
             }
+            /* Accessibility tone cues: summed on top of the game mix (after the
+             * DSP chain so they aren't filtered), clamped inside the mixer. */
+            Port_A11yAudio_Mix(buffer, frames);
+        } else {
+            memset(buffer, 0, frames * PORT_AUDIO_BYTES_PER_FRAME);
         }
-        /* Accessibility tone cues: summed on top of the game mix (after the
-         * DSP chain so they aren't filtered), clamped inside the mixer. */
-        Port_A11yAudio_Mix(buffer, frames);
         SDL_PutAudioStreamData(stream, buffer, frames * PORT_AUDIO_BYTES_PER_FRAME);
         remaining -= frames * PORT_AUDIO_BYTES_PER_FRAME;
     }

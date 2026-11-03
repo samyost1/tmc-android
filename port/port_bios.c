@@ -35,11 +35,11 @@ static bool sFastForward = false;
 static int sFrameNum = 0;
 
 bool Port_Bios_IsFastForward(void) {
-    return sFastForward;
+    return __atomic_load_n(&sFastForward, __ATOMIC_RELAXED);
 }
 
 void Port_Bios_SetFastForward(bool on) {
-    sFastForward = on;
+    __atomic_store_n(&sFastForward, on, __ATOMIC_RELAXED);
 }
 
 /* Soft-reset re-entry. AgbMain arms this with setjmp() at the top of the
