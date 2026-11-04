@@ -244,7 +244,26 @@ static void Port_UpdateInput(void) {
     }
 }
 
+static bool SDLCALL Port_LifecycleEventWatch(void* userdata, SDL_Event* event) {
+    (void)userdata;
+    if (event->type == SDL_EVENT_WILL_ENTER_BACKGROUND ||
+        event->type == SDL_EVENT_TERMINATING ||
+        event->type == SDL_EVENT_QUIT) {
+        if (Port_Config_GetAutoSaveOnExit()) {
+            extern int Port_QuickSave_SaveAutoResume(void);
+            Port_QuickSave_SaveAutoResume();
+        }
+    }
+    return true;
+}
+
 static void Port_PumpEvents(void) {
+    static bool sEventWatchRegistered = false;
+    if (!sEventWatchRegistered) {
+        sEventWatchRegistered = true;
+        SDL_AddEventWatch(Port_LifecycleEventWatch, NULL);
+    }
+
     SDL_Event e;
     while (SDL_PollEvent(&e)) {
         /* Forward every event to ImGui so its window/keyboard tracking

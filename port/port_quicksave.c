@@ -279,6 +279,7 @@ static int Snapshot_Restore(const Slot* s) {
         }
         Port_RestorePlayerHitbox();
     }
+    Port_RestorePlayerHitbox();
     return 1;
 }
 
@@ -644,15 +645,48 @@ int Port_QuickSave_HasSnapshot(void) {
 int Port_QuickSave_SaveAutoResume(void) {
     if (gMain.task != TASK_GAME)
         return 0;
+    static u32 sLastResumeFrame = 0xFFFFFFFF;
+    static u64 sLastResumeTime = 0;
+    const u64 now = SDL_GetTicks();
+    if (sLastResumeFrame == gMain.ticks && (now - sLastResumeTime) < 1000) {
+        return 1; /* Already saved this frame within 1 sec (debounce back-to-back lifecycle events) */
+    }
+    sLastResumeFrame = gMain.ticks;
+    sLastResumeTime = now;
     return Port_QuickSave_SaveSlot(AUTO_RESUME_SLOT);
 }
 
 int Port_QuickSave_LoadAutoResume(void) {
-    return Port_QuickSave_LoadSlot(AUTO_RESUME_SLOT);
+    if (Port_QuickSave_HasSlot(AUTO_RESUME_SLOT)) {
+        if (Port_QuickSave_LoadSlot(AUTO_RESUME_SLOT))
+            return 1;
+    }
+    /* Fallback to newest auto-save ring slot if resume save missing (e.g. killed abruptly) */
+    u64 best_time = 0;
+    int best_slot = -1;
+    for (int s = AUTO_SLOT_BASE; s < AUTO_SLOT_BASE + NUM_AUTO_SLOTS; s++) {
+        u64 t = Port_QuickSave_SlotTimestamp(s);
+        if (t > best_time) {
+            best_time = t;
+            best_slot = s;
+        }
+    }
+    if (best_slot >= 0) {
+        fprintf(stderr, "[autosave] falling back to ring slot %d (timestamp %llu)\n", best_slot,
+                (unsigned long long)best_time);
+        return Port_QuickSave_LoadSlot(best_slot);
+    }
+    return 0;
 }
 
 int Port_QuickSave_HasAutoResume(void) {
-    return Port_QuickSave_HasSlot(AUTO_RESUME_SLOT);
+    if (Port_QuickSave_HasSlot(AUTO_RESUME_SLOT))
+        return 1;
+    for (int s = AUTO_SLOT_BASE; s < AUTO_SLOT_BASE + NUM_AUTO_SLOTS; s++) {
+        if (Port_QuickSave_HasSlot(s))
+            return 1;
+    }
+    return 0;
 }
 
 /* Auto-save — call once per frame from VBlankIntrWait. Saves to the
@@ -666,6 +700,9 @@ static void TakeAutoSnapshot(const char* reason) {
     }
     if (Port_QuickSave_SaveSlot(slot)) {
         fprintf(stderr, "[autosave] saved to ring slot %d (%s)\n", slot, reason);
+    }
+    if (Port_Config_GetAutoSaveOnExit()) {
+        Port_QuickSave_SaveSlot(AUTO_RESUME_SLOT);
     }
 }
 

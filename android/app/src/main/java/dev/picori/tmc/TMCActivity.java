@@ -1,6 +1,7 @@
 package dev.picori.tmc;
 
 import android.os.Bundle;
+import android.util.Log;
 import android.view.View;
 import android.view.Window;
 import org.libsdl.app.SDLActivity;
@@ -14,6 +15,8 @@ import org.libsdl.app.SDLActivity;
  * Java-side glue binds to the JNI_OnLoad exported from the static SDL inside.
  */
 public class TMCActivity extends SDLActivity {
+    private static final String TAG = "TMCActivity";
+
     // Same set the second-screen panel uses (see SecondScreenPresentation) and
     // the same set SDL's own glue would apply — kept here so the game window
     // never depends on SDL having dispatched COMMAND_CHANGE_WINDOW_STYLE.
@@ -84,6 +87,8 @@ public class TMCActivity extends SDLActivity {
     // step with the game that feeds it. Keeping the panel up past onStop
     // would leave the native painter (a free-running ~20 Hz thread, see
     // port/port_second_screen.c) redrawing a frozen game in the background.
+    public static native void nativeOnLifecyclePause();
+
     @Override
     protected void onStart() {
         super.onStart();
@@ -91,8 +96,33 @@ public class TMCActivity extends SDLActivity {
     }
 
     @Override
+    protected void onPause() {
+        try {
+            nativeOnLifecyclePause();
+        } catch (Throwable t) {
+            Log.e(TAG, "nativeOnLifecyclePause failed", t);
+        }
+        super.onPause();
+    }
+
+    @Override
     protected void onStop() {
+        try {
+            nativeOnLifecyclePause();
+        } catch (Throwable t) {
+            Log.e(TAG, "nativeOnLifecyclePause onStop failed", t);
+        }
         mSecondScreen.stop();
         super.onStop();
+    }
+
+    @Override
+    protected void onDestroy() {
+        try {
+            nativeOnLifecyclePause();
+        } catch (Throwable t) {
+            Log.e(TAG, "nativeOnLifecyclePause onDestroy failed", t);
+        }
+        super.onDestroy();
     }
 }
