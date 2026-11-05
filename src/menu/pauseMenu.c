@@ -25,6 +25,7 @@
 #include "port_gba_mem.h"
 #include "port_softslots.h"
 #include "rando/rando_runtime.h"
+void Port_SecondScreen_CycleTab(int direction);
 #endif
 
 extern void sub_080A4DB8(u32);
@@ -157,10 +158,8 @@ void PauseMenu_Variant2(void) {
                 default:
 #ifdef PC_PORT
                     if (iVar1 == 1) {
-                        extern void Port_SecondScreen_CycleTab(int direction);
                         Port_SecondScreen_CycleTab(-1);
                     } else if (iVar1 == 2) {
-                        extern void Port_SecondScreen_CycleTab(int direction);
                         Port_SecondScreen_CycleTab(1);
                     }
 #endif

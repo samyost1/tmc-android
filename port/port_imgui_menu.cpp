@@ -1496,7 +1496,7 @@ static void DrawRibbonControlsTab(void) {
             Port_Config_SetFastForwardSpeed(speed);
         }
         if (ImGui::IsItemHovered()) {
-            ImGui::SetTooltip("Set maximum speedup multiplier for fast-forward (1.5x up to 10x, or Uncapped).");
+            ImGui::SetTooltip("Set maximum speedup multiplier for fast-forward (1.25x up to 10x, or Uncapped).");
         }
     }
     ImGui::Separator();

@@ -266,10 +266,35 @@ static void Port_Audio_Feed(void* userdata, SDL_AudioStream* stream, int additio
            atomic load here on the SDL audio thread to avoid a data race. It is a
            rarely-changing u8 flag, so relaxed ordering is sufficient. */
         bool mute = (__atomic_load_n(&gMain.muteAudio, __ATOMIC_RELAXED) != 0) || ffMute;
-        Port_M4A_Backend_Render(buffer, (uint32_t)frames, mute);
         static bool sWasMuted = false;
-        if (!mute) {
+        if (mute) {
+            if (!sWasMuted) {
+                /* Fade out smoothly over 256 samples to prevent click/pop */
+                Port_M4A_Backend_Render(buffer, (uint32_t)frames, false);
+                const int rampFrames = (frames < 256) ? (int)frames : 256;
+                for (int i = 0; i < rampFrames; ++i) {
+                    float factor = 1.0f - ((float)i / (float)rampFrames);
+                    buffer[i * 2 + 0] = (int16_t)(buffer[i * 2 + 0] * factor);
+                    buffer[i * 2 + 1] = (int16_t)(buffer[i * 2 + 1] * factor);
+                }
+                for (int i = rampFrames; i < frames; ++i) {
+                    buffer[i * 2 + 0] = 0;
+                    buffer[i * 2 + 1] = 0;
+                }
+                sWasMuted = true;
+            } else {
+                Port_M4A_Backend_Render(buffer, (uint32_t)frames, true);
+            }
+        } else {
+            Port_M4A_Backend_Render(buffer, (uint32_t)frames, false);
             if (sWasMuted) {
+                /* Fade in smoothly over 256 samples to prevent click/pop */
+                const int rampFrames = (frames < 256) ? (int)frames : 256;
+                for (int i = 0; i < rampFrames; ++i) {
+                    float factor = (float)i / (float)rampFrames;
+                    buffer[i * 2 + 0] = (int16_t)(buffer[i * 2 + 0] * factor);
+                    buffer[i * 2 + 1] = (int16_t)(buffer[i * 2 + 1] * factor);
+                }
                 __atomic_store_n(&sFilterClearPending, 1, __ATOMIC_RELEASE);
                 sWasMuted = false;
             }
@@ -288,9 +313,6 @@ static void Port_Audio_Feed(void* userdata, SDL_AudioStream* stream, int additio
             /* Accessibility tone cues: summed on top of the game mix (after the
              * DSP chain so they aren't filtered), clamped inside the mixer. */
             Port_A11yAudio_Mix(buffer, frames);
-        } else {
-            sWasMuted = true;
-            memset(buffer, 0, frames * PORT_AUDIO_BYTES_PER_FRAME);
         }
         SDL_PutAudioStreamData(stream, buffer, frames * PORT_AUDIO_BYTES_PER_FRAME);
         remaining -= frames * PORT_AUDIO_BYTES_PER_FRAME;

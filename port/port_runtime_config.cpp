@@ -788,6 +788,11 @@ extern "C" void Port_Config_Load(const char* path) {
             *e.var = JsonValue(j, e.key, std::string(e.def));
         for (const auto& e : kFloatCfg)
             *e.var = (float)JsonValue(j, e.key, e.def);
+        if (sFastForwardSpeed < 1.25f) {
+            sFastForwardSpeed = 0.0f;
+        } else if (sFastForwardSpeed > 10.0f) {
+            sFastForwardSpeed = 10.0f;
+        }
         for (const auto& e : kScaleCfg) {
             int v = JsonValue(j, e.key, e.def);
             *e.var = (v >= e.lo && v <= e.hi) ? (u8)v : (u8)e.def;
@@ -1128,6 +1133,10 @@ extern "C" float Port_Config_GetFastForwardSpeed(void) {
 }
 
 extern "C" void Port_Config_SetFastForwardSpeed(float speed) {
+    if (speed < 1.25f)
+        speed = 0.0f;
+    else if (speed > 10.0f)
+        speed = 10.0f;
     uint32_t val;
     memcpy(&val, &speed, sizeof(val));
     __atomic_store_n(reinterpret_cast<uint32_t*>(&sFastForwardSpeed), val, __ATOMIC_RELAXED);

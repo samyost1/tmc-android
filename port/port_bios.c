@@ -129,6 +129,7 @@ static void Port_UpdateInput(void) {
      * one item-get cutscene and holds it so TMC_PROFILE captures the drop. */
     { Port_ReproItemGet_Tick(sFrameNum); }
 
+    static bool sPrevPhysicalFf = false;
     {
         /* While either overlay is open, hold all GBA buttons released so
          * the game doesn't observe stray input from key presses we routed
@@ -142,14 +143,14 @@ static void Port_UpdateInput(void) {
              * ignore, and a stale flag would fire the frame the overlay closes. */
             Port_Config_ClearInputEdges();
             Port_SoftSlots_TickPause();
-            sFastForward = false;
+            Port_Bios_SetFastForward(false);
+            sPrevPhysicalFf = false;
             sFrameNum++;
             return;
         }
     }
 
     /* Fast-forward: support held or toggle mode via remappable PORT_INPUT_FAST_FORWARD. */
-    static bool sPrevPhysicalFf = false;
     bool curPhysicalFf = Port_Config_InputPressed(PORT_INPUT_FAST_FORWARD);
     if (Port_Config_GetFastForwardToggle()) {
         if (Port_Config_InputEdgePressed(PORT_INPUT_FAST_FORWARD)) {
@@ -247,12 +248,9 @@ static void Port_UpdateInput(void) {
 static bool SDLCALL Port_LifecycleEventWatch(void* userdata, SDL_Event* event) {
     (void)userdata;
     if (event->type == SDL_EVENT_WILL_ENTER_BACKGROUND ||
-        event->type == SDL_EVENT_TERMINATING ||
-        event->type == SDL_EVENT_QUIT) {
-        if (Port_Config_GetAutoSaveOnExit()) {
-            extern int Port_QuickSave_SaveAutoResume(void);
-            Port_QuickSave_SaveAutoResume();
-        }
+        event->type == SDL_EVENT_TERMINATING) {
+        extern void Port_QuickSave_RequestLifecycleAutoResume(void);
+        Port_QuickSave_RequestLifecycleAutoResume();
     }
     return true;
 }
@@ -285,15 +283,9 @@ static void Port_PumpEvents(void) {
                 continue;
             }
         }
-        if (e.type == SDL_EVENT_QUIT || e.type == SDL_EVENT_TERMINATING || e.type == SDL_EVENT_WILL_ENTER_BACKGROUND) {
-            if (Port_Config_GetAutoSaveOnExit()) {
-                extern int Port_QuickSave_SaveAutoResume(void);
-                Port_QuickSave_SaveAutoResume();
-            }
-            if (e.type == SDL_EVENT_QUIT) {
-                Port_ImGui_RequestQuitModal();
-                continue;
-            }
+        if (e.type == SDL_EVENT_QUIT) {
+            Port_ImGui_RequestQuitModal();
+            continue;
         }
         if (Port_RandoFileMenu_IsOpen()) {
             /* The ImGui modal owns the randomizer-setup input (the event was
@@ -1120,11 +1112,18 @@ void VBlankIntrWait(void) {
     Port_UpdateInput();
     Port_TestInputTick(gMain.ticks);
 
-    /* Auto-load state on startup (if enabled and resume save exists). */
+    /* Process pending lifecycle auto-save request at safe frame boundary on the game thread */
     {
-        static bool sAutoResumeDone = false;
-        if (!sAutoResumeDone) {
-            sAutoResumeDone = true;
+        extern void Port_QuickSave_CheckLifecycleRequest(void);
+        Port_QuickSave_CheckLifecycleRequest();
+    }
+
+    /* Auto-load state on startup (if enabled and resume save exists).
+     * Defer until the engine has finished initial boot (reached Title, Game, or >30 ticks). */
+    {
+        static bool sAutoResumeAttempted = false;
+        if (!sAutoResumeAttempted && (gMain.task == TASK_TITLE || gMain.task == TASK_GAME || gMain.ticks >= 30)) {
+            sAutoResumeAttempted = true;
             if (Port_Config_GetAutoLoadOnStartup()) {
                 extern int Port_QuickSave_HasAutoResume(void);
                 extern int Port_QuickSave_LoadAutoResume(void);

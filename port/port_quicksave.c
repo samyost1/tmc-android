@@ -41,6 +41,9 @@
 #include <string.h>
 #include <stdio.h>
 #include <time.h>
+#if !defined(_WIN32)
+#include <unistd.h>
+#endif
 
 #include <SDL3/SDL.h>
 
@@ -277,7 +280,6 @@ static int Snapshot_Restore(const Slot* s) {
         if (ct == 0 || ct < lo || ct >= hi) {
             gRoomControls.camera_target = (Entity*)&gPlayerEntity;
         }
-        Port_RestorePlayerHitbox();
     }
     Port_RestorePlayerHitbox();
     return 1;
@@ -397,9 +399,9 @@ static int WriteSlotToDisk(int slot) {
     if (!s->valid || s->snapshot == NULL)
         return 0;
 
-    char path[64];
+    char path[128];
     SlotFilename(slot, path, sizeof(path));
-    char tmpPath[72];
+    char tmpPath[136];
     snprintf(tmpPath, sizeof(tmpPath), "%s.tmp", path);
     FILE* f = fopen(tmpPath, "wb");
     if (!f) {
@@ -429,13 +431,20 @@ static int WriteSlotToDisk(int slot) {
     }
     const size_t written = fwrite(s->snapshot, 1, s->bytes, f);
     fflush(f);
+#if !defined(_WIN32)
+    fsync(fileno(f));
+#endif
     fclose(f);
     if (written != s->bytes) {
         fprintf(stderr, "[quicksave] short write %s (%zu/%zu)\n", tmpPath, written, s->bytes);
         remove(tmpPath);
         return 0;
     }
-    rename(tmpPath, path);
+    if (rename(tmpPath, path) != 0) {
+        fprintf(stderr, "[quicksave] rename %s -> %s failed\n", tmpPath, path);
+        remove(tmpPath);
+        return 0;
+    }
     return 1;
 }
 
@@ -515,15 +524,31 @@ static int ReadSlotFromDisk(int slot) {
  *   Public API
  * ============================================================ */
 
+static SDL_Mutex* sSaveMutex = NULL;
+static SDL_Semaphore* sLifecycleDoneSem = NULL;
+static bool sLifecycleRequestPending = false;
+
+static void EnsureSyncObjects(void) {
+    if (!sSaveMutex)
+        sSaveMutex = SDL_CreateMutex();
+    if (!sLifecycleDoneSem)
+        sLifecycleDoneSem = SDL_CreateSemaphore(0);
+}
+
 int Port_QuickSave_SaveSlot(int slot) {
     if (slot < 0 || slot >= NUM_SLOTS)
         return 0;
-    if (!Snapshot_Capture(&sSlots[slot]))
+    EnsureSyncObjects();
+    SDL_LockMutex(sSaveMutex);
+    if (!Snapshot_Capture(&sSlots[slot])) {
+        SDL_UnlockMutex(sSaveMutex);
         return 0;
+    }
     /* Best-effort disk persistence — failure is non-fatal, the in-memory
      * snapshot still works for the session. */
     WriteSlotToDisk(slot);
     fprintf(stderr, "[quicksave] slot %d saved (%zu bytes)\n", slot, sSlots[slot].bytes);
+    SDL_UnlockMutex(sSaveMutex);
     return 1;
 }
 
@@ -534,19 +559,24 @@ int Port_QuickSave_LoadSlot(int slot) {
         return 0;
     if (slot < 0 || slot >= NUM_SLOTS)
         return 0;
+    EnsureSyncObjects();
+    SDL_LockMutex(sSaveMutex);
     if (!sSlots[slot].valid) {
         /* Try loading from disk first — handles "fresh launch, never
          * saved this session but slot exists on disk from last run". */
         if (!ReadSlotFromDisk(slot)) {
             fprintf(stderr, "[quicksave] slot %d empty\n", slot);
+            SDL_UnlockMutex(sSaveMutex);
             return 0;
         }
     }
     if (!Snapshot_Restore(&sSlots[slot])) {
         fprintf(stderr, "[quicksave] slot %d restore failed\n", slot);
+        SDL_UnlockMutex(sSaveMutex);
         return 0;
     }
     fprintf(stderr, "[quicksave] slot %d restored\n", slot);
+    SDL_UnlockMutex(sSaveMutex);
     {
         /* Tell the Reborn-parity layer a resume just happened so it
          * can swallow the next queued Ezlo hint (if that toggle is on). */
@@ -642,9 +672,26 @@ int Port_QuickSave_HasSnapshot(void) {
     return Port_QuickSave_HasSlot(0);
 }
 
-int Port_QuickSave_SaveAutoResume(void) {
-    if (gMain.task != TASK_GAME)
+int Port_QuickSave_DeleteSlot(int slot) {
+    if (slot < 0 || slot >= NUM_SLOTS)
         return 0;
+    EnsureSyncObjects();
+    SDL_LockMutex(sSaveMutex);
+    sSlots[slot].valid = 0;
+    char path[128];
+    SlotFilename(slot, path, sizeof(path));
+    remove(path);
+    SDL_UnlockMutex(sSaveMutex);
+    return 1;
+}
+
+int Port_QuickSave_SaveAutoResume(void) {
+    if (gMain.task != TASK_GAME) {
+        /* Outside active gameplay (Title / File Select / GameOver): delete any stale resume file
+         * so the next launch doesn't jump back to an old session. */
+        Port_QuickSave_DeleteSlot(AUTO_RESUME_SLOT);
+        return 0;
+    }
     static u32 sLastResumeFrame = 0xFFFFFFFF;
     static u64 sLastResumeTime = 0;
     const u64 now = SDL_GetTicks();
@@ -654,6 +701,31 @@ int Port_QuickSave_SaveAutoResume(void) {
     sLastResumeFrame = gMain.ticks;
     sLastResumeTime = now;
     return Port_QuickSave_SaveSlot(AUTO_RESUME_SLOT);
+}
+
+void Port_QuickSave_RequestLifecycleAutoResume(void) {
+    if (!Port_Config_GetAutoSaveOnExit())
+        return;
+    EnsureSyncObjects();
+    sLifecycleRequestPending = true;
+    /* Wait up to 150ms for the game thread to reach VBlank and capture frame-boundary state */
+    if (SDL_WaitSemaphoreTimeout(sLifecycleDoneSem, 150)) {
+        sLifecycleRequestPending = false;
+        return;
+    }
+    /* Fallback: if game thread was already paused or suspended by SDL, save directly under mutex */
+    sLifecycleRequestPending = false;
+    Port_QuickSave_SaveAutoResume();
+}
+
+void Port_QuickSave_CheckLifecycleRequest(void) {
+    if (sLifecycleRequestPending) {
+        sLifecycleRequestPending = false;
+        Port_QuickSave_SaveAutoResume();
+        if (sLifecycleDoneSem) {
+            SDL_SignalSemaphore(sLifecycleDoneSem);
+        }
+    }
 }
 
 int Port_QuickSave_LoadAutoResume(void) {
@@ -700,9 +772,6 @@ static void TakeAutoSnapshot(const char* reason) {
     }
     if (Port_QuickSave_SaveSlot(slot)) {
         fprintf(stderr, "[autosave] saved to ring slot %d (%s)\n", slot, reason);
-    }
-    if (Port_Config_GetAutoSaveOnExit()) {
-        Port_QuickSave_SaveSlot(AUTO_RESUME_SLOT);
     }
 }
 

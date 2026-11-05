@@ -24,6 +24,9 @@ int Port_QuickSave_HasPractice(void);
 int Port_QuickSave_SaveAutoResume(void);
 int Port_QuickSave_LoadAutoResume(void);
 int Port_QuickSave_HasAutoResume(void);
+int Port_QuickSave_DeleteSlot(int slot);
+void Port_QuickSave_RequestLifecycleAutoResume(void);
+void Port_QuickSave_CheckLifecycleRequest(void);
 
 void Port_QuickSave_AutoTick(void);
 int Port_QuickSave_AutoEnabled(void);

@@ -107,11 +107,6 @@ public class TMCActivity extends SDLActivity {
 
     @Override
     protected void onStop() {
-        try {
-            nativeOnLifecyclePause();
-        } catch (Throwable t) {
-            Log.e(TAG, "nativeOnLifecyclePause onStop failed", t);
-        }
         mSecondScreen.stop();
         super.onStop();
     }
