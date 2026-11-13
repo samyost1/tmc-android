@@ -1138,6 +1138,7 @@ void sub_0801E104(void) {
        whole class of sub_0801E104-only teardowns: lightManager (dark-room end),
        whiteTriangleEffect (screen wipe), vaatiAppearingManager Evaporate. */
     port_hdma_unregister(0);
+    gba_write16(0x04000058, 0);
 #endif
 }
 
@@ -1147,6 +1148,9 @@ void sub_0801E120(void) {
     gScreen.controls.windowOutsideControl = 0x3F;
     gScreen.controls.window0HorizontalDimensions = 0;
     gScreen.controls.window0VerticalDimensions = 160;
+#ifdef PC_PORT
+    gba_write16(0x04000058, 0);
+#endif
 }
 
 void sub_0801E154(u32 a1) {
@@ -1167,6 +1171,9 @@ void sub_0801E1B8(u32 a1, u32 a2) {
     gScreen.controls.windowOutsideControl = a2;
     gScreen.controls.window0HorizontalDimensions = 0;
     gScreen.controls.window0VerticalDimensions = 160;
+#ifdef PC_PORT
+    gba_write16(0x04000058, 0);
+#endif
 }
 
 void sub_0801E1EC(u32 a1, u32 a2, u32 a3) {
@@ -1211,15 +1218,26 @@ void sub_0801E290(u32 param_1, u32 param_2, u32 count) {
 #ifdef PC_PORT
     /* On GBA, pointer arithmetic wraps at 32 bits, so starting from filler[-2]
      * (param_2=0xFFFFFFFF) works. On 64-bit, that produces an invalid address.
-     * Use index-based access instead of pointer incrementing. */
+     * Use index-based access instead of pointer incrementing.
+     * In widescreen (> 240 px), WIN0H packs left/right as 8-bit u8 bytes and
+     * clamps right at 0xF0 (240). When the spotlight center param_1 > 120,
+     * shift center to 120 so [left, right] stays cleanly inside 0..240 and
+     * publish the horizontal offset in unused GBA I/O 0x58 for the PPU. */
     u8* base = ((struct_02017AA0*)gUnk_02017AA0)[gUnk_03003DE4[0]].filler;
+    s32 center_x = (s32)param_1;
+    s32 win0_ofs = 0;
+    if (center_x > 120) {
+        win0_ofs = center_x - 120;
+        center_x = 120;
+    }
+    gba_write16(0x04000058, (uint16_t)(int16_t)win0_ofs);
     uVar5 = uVar7 = param_2;
     puVar6 = gUnk_02018EE0;
 
     while (count-- > 0) {
         uVar1 = *puVar6++;
-        iVar2 = param_1 - uVar1;
-        iVar4 = param_1 + uVar1;
+        iVar2 = center_x - uVar1;
+        iVar4 = center_x + uVar1;
         if (iVar2 < 0) {
             iVar2 = 0;
         }

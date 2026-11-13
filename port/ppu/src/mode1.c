@@ -449,13 +449,14 @@ void virtuappu_mode1_render_text_bg_line(int bg_index, int line, uint32_t* line_
     /* Widescreen Option A: 32-tile BGs have valid VRAM tile data only
      * within the native 240 px. Cull the line to the current visible frame
      * width, but keep the fixed framebuffer pitch separate for presentation. */
-    int render_max_x = (map_width_tiles >= 64)
-                           ? frame_width
-                           : ((virtuappu_mode1_ws_shadow[bg_index] != NULL) ? frame_width : MODE1_GBA_BG_CLIP_X);
+    const int ws_shadow_base = virtuappu_mode1_ws_shadow_base_tile[bg_index];
+    const int ws_bg_max_x = (virtuappu_mode1_ws_shadow[bg_index] != NULL)
+                                ? frame_width
+                                : ((ws_shadow_base < -1) ? (-ws_shadow_base) : MODE1_GBA_BG_CLIP_X);
+    int render_max_x = (map_width_tiles >= 64) ? frame_width : ws_bg_max_x;
     if (render_max_x > frame_width)
         render_max_x = frame_width;
     const bool ws_shadow_active = (map_width_tiles < 64) && (virtuappu_mode1_ws_shadow[bg_index] != NULL);
-    const int ws_shadow_base = virtuappu_mode1_ws_shadow_base_tile[bg_index];
     uint16_t* const ws_shadow = virtuappu_mode1_ws_shadow[bg_index];
     const bool ws_hud_right_anchor =
         (bg_index == 0) && (virtuappu_mode1_ws_hud_right_anchor != 0) && (frame_width > MODE1_GBA_BG_CLIP_X);
@@ -847,8 +848,17 @@ void virtuappu_mode1_composite_line(int line, uint32_t bg_layers[MODE1_GBA_BG_CO
     uint16_t winout = virtuappu_mode1_io_read16(MODE1_IO_WINOUT);
     uint16_t win0h = virtuappu_mode1_io_read16(MODE1_IO_WIN0H);
     uint16_t win0v = virtuappu_mode1_io_read16(MODE1_IO_WIN0V);
+    int16_t win0_x_ofs = (int16_t)virtuappu_mode1_io_read16(0x58);
     int win0_left = win0h >> 8u;
     int win0_right = win0h & 0xFFu;
+    if (win0_x_ofs != 0 && (win0_left != 0 || win0_right != 0)) {
+        win0_left += win0_x_ofs;
+        win0_right += win0_x_ofs;
+        if (win0_left < 0)
+            win0_left = 0;
+        if (win0_right < 0)
+            win0_right = 0;
+    }
     int win0_top = win0v >> 8u;
     int win0_bottom = win0v & 0xFFu;
     bool win0_h_wrap;

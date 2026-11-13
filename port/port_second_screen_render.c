@@ -1,6 +1,7 @@
 #include "port_second_screen_render.h"
 
 #include "port_gba_mem.h"
+#include "port_offset_remap.h"
 #include "port_rom.h"
 #include "port_second_screen_theme.h"
 #include "sprite.h"
@@ -44,7 +45,7 @@ extern void* sub_080AD8F0(u32 sprite, u32 frame);
 extern Frame* gSpriteAnimations_322[];
 #define SPRITE_ANIM_322_COUNT 128
 
-#define ITEM_SPRITE 322u /* decimal, matches gSpriteAnimations_322's naming — NOT 0x322 */
+#define ITEM_SPRITE Port_RemapSpriteIndex(322u) /* decimal, matches gSpriteAnimations_322's naming — NOT 0x322 */
 
 /* Piece offsets are relative to the game's OAM command position for a
  * slot; the body piece's fixed offset maps that position into the

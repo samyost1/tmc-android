@@ -11,6 +11,7 @@
 #include "fade.h"
 #include "functions.h"
 #include "gfx.h"
+#include "port_offset_remap.h"
 #ifdef PC_PORT
 #include "port_gba_mem.h"
 #endif
@@ -2426,7 +2427,7 @@ void LoadBgAnimationGfx(const BgAnimationGfx* param_1) {
     u32 vramOffset;
     u32 size;
     while (TRUE) {
-        src = &gGlobalGfxAndPalettes[param_1->gfxOffset];
+        src = &gGlobalGfxAndPalettes[Port_RemapGfxOffset(param_1->gfxOffset)];
         size = param_1->gfxSize;
         vramOffset = param_1->vramOffset;
         if ((param_1->flags & BG_ANIM_PALETTE) != 0) {

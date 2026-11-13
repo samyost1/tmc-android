@@ -226,7 +226,7 @@ float sMasterVolume = 1.0f;    /* game master volume [0,1]; 1.0 = unchanged */
 bool sHoldAdvanceText = false; /* hold an advance key to keep paging text */
 bool sRollAttackMacroEnabled = true;
 bool sFastForwardToggle = false; /* false = hold to fast-forward, true = toggle on/off */
-float sFastForwardSpeed = 0.0f;  /* 0.0 = uncapped */
+float sFastForwardSpeed = 2.0f;  /* default 2x; 0.0 = uncapped */
 bool sAutoSaveOnExit = true;     /* auto-save state on exit/quit/background */
 bool sAutoLoadOnStartup = true;  /* auto-load state on game launch */
 #ifdef __ANDROID__
@@ -890,6 +890,62 @@ extern "C" void Port_Config_Load(const char* path) {
         for (const auto& d : kDefaults) {
             LoadBinds(d.input, b.contains(d.name) ? b[d.name] : DefaultsJson()["bindings"][d.name]);
         }
+
+        /* Sanitize binding conflicts: a button/axis/key mapped to Fast-Forward must
+         * not simultaneously trigger soft-slots, roll attack, or gameplay buttons. */
+        for (size_t ffi = 0; ffi < sBinds[PORT_INPUT_FAST_FORWARD].size();) {
+            const Bind& ffBind = sBinds[PORT_INPUT_FAST_FORWARD][ffi];
+            const PortInput primaryInputs[] = {
+                PORT_INPUT_A, PORT_INPUT_B, PORT_INPUT_L, PORT_INPUT_R,
+                PORT_INPUT_START, PORT_INPUT_SELECT,
+                PORT_INPUT_UP, PORT_INPUT_DOWN, PORT_INPUT_LEFT, PORT_INPUT_RIGHT
+            };
+            bool conflictWithPrimary = false;
+            for (PortInput pi : primaryInputs) {
+                for (const Bind& pb : sBinds[pi]) {
+                    bool same = (ffBind.key != SDLK_UNKNOWN && pb.key == ffBind.key) ||
+                                (ffBind.pad != SDL_GAMEPAD_BUTTON_INVALID && pb.pad == ffBind.pad) ||
+                                (ffBind.axis != SDL_GAMEPAD_AXIS_INVALID && pb.axis == ffBind.axis &&
+                                 pb.axisDir == ffBind.axisDir);
+                    if (same) {
+                        conflictWithPrimary = true;
+                        break;
+                    }
+                }
+                if (conflictWithPrimary)
+                    break;
+            }
+            if (conflictWithPrimary) {
+                /* Never strip primary gameplay inputs; remove the conflict from Fast-Forward */
+                sBinds[PORT_INPUT_FAST_FORWARD].erase(sBinds[PORT_INPUT_FAST_FORWARD].begin() + (long)ffi);
+                continue;
+            }
+
+            /* For auxiliary/macro actions, strip the conflicting bind so FF does not fire macros */
+            const PortInput macroTargets[] = {
+                PORT_INPUT_ROLL_ATTACK,
+                PORT_INPUT_SOFT_X,
+                PORT_INPUT_SOFT_Y,
+                PORT_INPUT_SOFT_L2,
+                PORT_INPUT_SOFT_R2,
+            };
+            for (PortInput ci : macroTargets) {
+                std::vector<Bind>& v = sBinds[ci];
+                for (size_t k = 0; k < v.size();) {
+                    const Bind& b = v[k];
+                    bool same = (ffBind.key != SDLK_UNKNOWN && b.key == ffBind.key) ||
+                                (ffBind.pad != SDL_GAMEPAD_BUTTON_INVALID && b.pad == ffBind.pad) ||
+                                (ffBind.axis != SDL_GAMEPAD_AXIS_INVALID && b.axis == ffBind.axis &&
+                                 b.axisDir == ffBind.axisDir);
+                    if (same) {
+                        v.erase(v.begin() + (long)k);
+                    } else {
+                        ++k;
+                    }
+                }
+            }
+            ++ffi;
+        }
     };
 
     try {
@@ -1483,10 +1539,10 @@ extern "C" void Port_Config_HandleEvent(const SDL_Event* e) {
             captured = true;
         }
         if (captured) {
-            /* Speedrun integrity (Console-Parity): a physical key/button/axis
-             * must map to at most one action, so strip the captured input from
-             * every OTHER action before assigning it here. */
-            if (sConsoleParity) {
+            /* Unless in append mode, remove this key/pad/axis from any other
+             * action so a button assigned to e.g. Fast-Forward doesn't simultaneously
+             * fire Soft-Slots or Roll-Attack macro. */
+            if (!sCaptureAppend) {
                 for (size_t j = 0; j < PORT_INPUT_COUNT; j++) {
                     if ((int)j == (int)target)
                         continue;

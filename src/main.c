@@ -83,6 +83,14 @@ void AgbMain(void) {
     gRand = 0x1234567;
     MemClear(&gMain, sizeof(gMain));
     SetTask(TASK_TITLE);
+#ifdef PC_PORT
+    {
+        extern void Port_Bios_ResetAutoResume(void);
+        extern void Port_Bios_TryStartupAutoResume(void);
+        Port_Bios_ResetAutoResume();
+        Port_Bios_TryStartupAutoResume();
+    }
+#endif
     N64_POST(20);
 
     // Game Loop

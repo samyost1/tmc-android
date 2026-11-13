@@ -15,6 +15,7 @@
 #include "game.h"
 #include "manager/lightManager.h"
 #include "assets/gfx_offsets.h"
+#include "port_offset_remap.h"
 #include "gfx.h"
 
 #ifdef PC_PORT
@@ -313,10 +314,13 @@ void HoleManager_UpdateParallaxBackground(HoleManager* this) {
 
 void HoleManager_OnEnterRoom(HoleManager* this) {
     const HoleTransition* transition;
+    u32 adj;
     if (!super->type2)
         return;
     transition = &gHoleTransitions[super->type];
-    LoadResourceAsync(&gGlobalGfxAndPalettes[transition->parallax_background->gfx], BG_SCREEN_ADDR(30), BG_SCREEN_SIZE);
+    adj = Port_RemapGfxOffset(offset_gfx_unknown_6) - offset_gfx_unknown_6;
+    LoadResourceAsync(&gGlobalGfxAndPalettes[transition->parallax_background->gfx + adj], BG_SCREEN_ADDR(30),
+                      BG_SCREEN_SIZE);
     gScreen.bg3.control = 0x1E07;
     gScreen.lcd.displayControl |= DISPCNT_BG3_ON;
     gScreen.bg3.xOffset = gRoomControls.bg3OffsetX.HALF.HI;

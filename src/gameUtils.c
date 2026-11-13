@@ -311,6 +311,16 @@ s32 ModHealth(s32 delta) {
     }
 #endif
 
+#ifdef PC_PORT
+    /* Cheats: God Mode (invincibility) ignores all incoming damage. */
+    {
+        extern int Port_Cheat_GodModeEnabled(void);
+        if (delta < 0 && Port_Cheat_GodModeEnabled()) {
+            return stats->health;
+        }
+    }
+#endif
+
     newHealth = stats->health + delta;
     if (newHealth < 0) {
         newHealth = 0;
@@ -326,6 +336,13 @@ s32 ModHealth(s32 delta) {
 void ModRupees(s32 delta) {
     s32 newRupeeCount;
     Stats* s = &gSave.stats;
+
+#ifdef PC_PORT
+    extern int Port_Cheat_InfiniteRupeesEnabled(void);
+    if (delta < 0 && Port_Cheat_InfiniteRupeesEnabled()) {
+        return;
+    }
+#endif
 
     newRupeeCount = s->rupees + delta;
     if (newRupeeCount < 0) {

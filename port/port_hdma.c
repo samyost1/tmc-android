@@ -66,6 +66,10 @@ void port_hdma_unregister(int channel) {
         return;
     }
     s_channels[channel].active = 0;
+    if (channel == 0) {
+        extern void gba_write16(uint32_t addr, uint16_t v);
+        gba_write16(0x04000058, 0);
+    }
 }
 
 int port_hdma_has_active_channels(void) {

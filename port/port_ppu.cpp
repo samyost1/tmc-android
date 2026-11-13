@@ -1237,7 +1237,9 @@ static bool Port_PPU_TryGpuRaster(void) {
         std::memset(sRasterWsShadow, 0, sizeof(sRasterWsShadow));
         for (int b = 0; b < MODE1_GBA_BG_COUNT; ++b) {
             f.ws_shadow_base_tile[b] =
-                (virtuappu_mode1_ws_shadow[b] != nullptr) ? virtuappu_mode1_ws_shadow_base_tile[b] : -1;
+                (virtuappu_mode1_ws_shadow[b] != nullptr || virtuappu_mode1_ws_shadow_base_tile[b] < -1)
+                    ? virtuappu_mode1_ws_shadow_base_tile[b]
+                    : -1;
             if (virtuappu_mode1_ws_shadow[b] != nullptr) {
                 std::memcpy(&sRasterWsShadow[(size_t)b * MODE1_WS_SHADOW_ROWS * cols], virtuappu_mode1_ws_shadow[b],
                             (size_t)MODE1_WS_SHADOW_ROWS * cols * sizeof(uint16_t));

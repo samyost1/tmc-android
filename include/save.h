@@ -144,6 +144,13 @@ u32 InitSaveData(void);
 u32 ReadSaveHeader(SaveHeader*);
 
 /**
+ * Write save file.
+ *
+ * @return Success.
+ */
+u32 WriteSaveFile(u32 index, SaveFile* saveFile);
+
+/**
  * Write save header.
  *
  * @return Success.

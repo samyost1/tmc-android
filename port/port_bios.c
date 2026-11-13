@@ -39,7 +39,35 @@ bool Port_Bios_IsFastForward(void) {
 }
 
 void Port_Bios_SetFastForward(bool on) {
+    bool prev = __atomic_load_n(&sFastForward, __ATOMIC_RELAXED);
     __atomic_store_n(&sFastForward, on, __ATOMIC_RELAXED);
+    if (prev != on) {
+        extern void Port_RollAttackMacro_Reset(void);
+        Port_RollAttackMacro_Reset();
+    }
+}
+
+static bool sAutoResumeAttempted = false;
+
+void Port_Bios_ResetAutoResume(void) {
+    sAutoResumeAttempted = false;
+}
+
+void Port_Bios_TryStartupAutoResume(void) {
+    if (sAutoResumeAttempted)
+        return;
+    sAutoResumeAttempted = true;
+    if (Port_Config_GetAutoLoadOnStartup()) {
+        extern int Port_QuickSave_HasAutoResume(void);
+        extern int Port_QuickSave_LoadAutoResume(void);
+        if (Port_QuickSave_HasAutoResume()) {
+            if (Port_QuickSave_LoadAutoResume()) {
+                fprintf(stderr, "[autosave] auto-loaded resume state on startup\n");
+                extern void Port_DebugMenu_ToastFromExternal(const char*);
+                Port_DebugMenu_ToastFromExternal("Auto-resume loaded");
+            }
+        }
+    }
 }
 
 /* Soft-reset re-entry. AgbMain arms this with setjmp() at the top of the
@@ -476,8 +504,8 @@ static void Port_PumpEvents(void) {
             /* When the debug menu is open, route key presses to it and
              * suppress further handling so the game itself doesn't see
              * the keystroke. */
-            {
-                if (Port_DebugMenu_IsOpen() && !Port_ImGui_WantsTextInput() && Port_DebugMenu_HandleKey((int)e.key.key)) {
+            if (e.type == SDL_EVENT_KEY_DOWN) {
+                if (!Port_ImGui_RibbonEnabled() && Port_DebugMenu_IsOpen() && !Port_ImGui_WantsTextInput() && Port_DebugMenu_HandleKey((int)e.key.key)) {
                     continue;
                 }
             }
@@ -546,7 +574,7 @@ static void Port_PumpEvents(void) {
             }
         }
 
-        if (Port_DebugMenu_IsOpen() && e.type == SDL_EVENT_GAMEPAD_BUTTON_DOWN) {
+        if (!Port_ImGui_RibbonEnabled() && Port_DebugMenu_IsOpen() && e.type == SDL_EVENT_GAMEPAD_BUTTON_DOWN) {
             int key = 0;
             switch (e.gbutton.button) {
                 case SDL_GAMEPAD_BUTTON_DPAD_UP: key = SDLK_UP; break;
@@ -797,23 +825,28 @@ void VBlankIntrWait(void) {
      * of the busy-wait timer below — so #26 reports of fast-forward and
      * the FPS preset menu having no effect on Windows are actually the
      * display refresh holding us. */
-    {
+    decoupled = Port_Config_GetDecoupleRender() && !Port_PacingForceLegacy();
+
+    if (!Port_PacingForceLegacy()) {
         u32 targetFps = Port_Config_TargetFps();
         /* Honour the user's VSync preference (persisted, #146), but force it
          * off in the cases where VSync would fight the frame-pacing timer and
-         * leave the FPS preset / fast-forward with no effect (#26): fast-
-         * forward, uncapped, or a target above the display refresh. The
-         * ceiling is the REAL refresh, not 60: on a 120 Hz panel a 75/90/120
-         * target fits under VSync fine, and forcing it off there just tears
-         * (visible as horizontal shear while walking with Smooth motion).
-         * Unknown refresh (headless/dummy) keeps the old 60 Hz assumption. */
+         * leave the FPS preset / fast-forward with no effect (#26): coupled
+         * fast-forward, uncapped, or a target above the display refresh.
+         * In decoupled mode, fast-forward presents at 60 Hz while running extra
+         * ticks between presents, so VSync never needs to be toggled off
+         * (avoiding mid-game Vulkan swapchain recreation on Android/desktop). */
         unsigned refresh = Port_PPU_DisplayRefreshRate();
         u32 vsyncCeiling = refresh > 0 ? (u32)refresh : 60;
-        bool mustDisable = sFastForward || targetFps == 0 || targetFps > vsyncCeiling;
+#ifdef __ANDROID__
+        bool mustDisable = false;
+        (void)targetFps;
+        (void)vsyncCeiling;
+#else
+        bool mustDisable = (!decoupled && sFastForward) || targetFps == 0 || targetFps > vsyncCeiling;
+#endif
         Port_PPU_SetVSync(Port_Config_GetVSync() && !mustDisable);
     }
-
-    decoupled = Port_Config_GetDecoupleRender() && !Port_PacingForceLegacy();
 
     if (!decoupled) {
         /* ---- Legacy coupled loop: one present per engine tick, then pace
@@ -941,7 +974,35 @@ void VBlankIntrWait(void) {
         renderPeriodNs = (targetFps != 0 && !sFastForward) ? Port_Config_FrameTimeNs() : 16666667ULL;
 
         now = entryNs;
-        if (tickPeriodNs == 0) {
+        if (sFastForward) {
+            /* Fast-forward in decoupled mode: present at a steady 60 Hz wall-clock
+             * cadence (scheduled relative to the END of each present so a slow or
+             * VSync-paced present still leaves a full 16.67 ms window for unblocked
+             * catch-up ticks) and pace ticks on their target multiplier grid. */
+            if (now >= sNextPresentNs) {
+                Port_PresentOnce(true);
+                now = SDL_GetTicksNS();
+                sNextPresentNs = now + renderPeriodNs;
+                Port_PumpEvents();
+            } else {
+                port_hdma_vblank_reset();
+            }
+            if (tickPeriodNs == 0) {
+                lastFrameNs = now;
+            } else {
+                u64 deadline = lastFrameNs + tickPeriodNs;
+                /* Allow up to 50 ms (~3 display frames) of catch-up after a blocking
+                 * present before snapping the tick deadline forward. */
+                u64 maxLagNs = tickPeriodNs > 50000000ULL ? tickPeriodNs : 50000000ULL;
+                if (now > deadline + maxLagNs) {
+                    deadline = now;
+                }
+                if (now < deadline) {
+                    SDL_DelayPrecise(deadline - now);
+                }
+                lastFrameNs = deadline;
+            }
+        } else if (tickPeriodNs == 0) {
             /* Uncapped ticks: run the engine flat out; present only when the
              * render grid comes due. "now + period" (not grid + period): with
              * most presents skipped there is no cadence to preserve, and grid
@@ -949,6 +1010,8 @@ void VBlankIntrWait(void) {
             if (now >= sNextPresentNs) {
                 Port_PresentOnce(true);
                 sNextPresentNs = SDL_GetTicksNS() + renderPeriodNs;
+            } else {
+                port_hdma_vblank_reset();
             }
             lastFrameNs = SDL_GetTicksNS();
         } else {
@@ -972,6 +1035,7 @@ void VBlankIntrWait(void) {
                 if (now >= deadline) {
                     if (now - sLastPresentEndNs > 100000000ULL) {
                         Port_PresentOnce(firstOfTick);
+                        firstOfTick = false;
                         sNextPresentNs = SDL_GetTicksNS() + renderPeriodNs;
                     }
                     /* Closed-loop overload guard for the eager-VSync path
@@ -1005,15 +1069,18 @@ void VBlankIntrWait(void) {
                      * when we break out). VSync itself paces us — EXCEPT
                      * while the overload hold (set above) is draining. */
                     if ((Port_PPU_VSyncEnabled() && sVsyncOverloadHold == 0) ||
-                        sFastForward ||
                         now + sPresentCostEmaNs <= deadline ||
                         now - sLastPresentEndNs > 100000000ULL) {
                         Port_PresentOnce(firstOfTick);
                         firstOfTick = false;
-                        /* Advance on the grid while keeping up (even
-                         * cadence); snap forward when behind it. */
-                        sNextPresentNs = (sNextPresentNs + renderPeriodNs > now) ? sNextPresentNs + renderPeriodNs
-                                                                                 : now + renderPeriodNs;
+                        {
+                            u64 postPresentNs = SDL_GetTicksNS();
+                            /* Advance on the grid while keeping up (even
+                             * cadence); snap forward when behind it. */
+                            sNextPresentNs = (sNextPresentNs + renderPeriodNs > postPresentNs)
+                                                 ? sNextPresentNs + renderPeriodNs
+                                                 : postPresentNs + renderPeriodNs;
+                        }
                         /* Keep the window/menu live between ticks. */
                         Port_PumpEvents();
                         continue;
@@ -1028,6 +1095,9 @@ void VBlankIntrWait(void) {
                     if (until > now)
                         SDL_DelayPrecise(until - now);
                 }
+            }
+            if (firstOfTick) {
+                port_hdma_vblank_reset();
             }
             lastFrameNs = deadline;
         }
@@ -1118,24 +1188,10 @@ void VBlankIntrWait(void) {
         Port_QuickSave_CheckLifecycleRequest();
     }
 
-    /* Auto-load state on startup (if enabled and resume save exists).
-     * Defer until the engine has finished initial boot (reached Title, Game, or >30 ticks). */
-    {
-        static bool sAutoResumeAttempted = false;
-        if (!sAutoResumeAttempted && (gMain.task == TASK_TITLE || gMain.task == TASK_GAME || gMain.ticks >= 30)) {
-            sAutoResumeAttempted = true;
-            if (Port_Config_GetAutoLoadOnStartup()) {
-                extern int Port_QuickSave_HasAutoResume(void);
-                extern int Port_QuickSave_LoadAutoResume(void);
-                if (Port_QuickSave_HasAutoResume()) {
-                    if (Port_QuickSave_LoadAutoResume()) {
-                        fprintf(stderr, "[autosave] auto-loaded resume state on startup\n");
-                        extern void Port_DebugMenu_ToastFromExternal(const char*);
-                        Port_DebugMenu_ToastFromExternal("Auto-resume loaded");
-                    }
-                }
-            }
-        }
+    /* Auto-load state on startup (if enabled and resume save exists). */
+    if (gMain.task == TASK_TITLE || gMain.task == TASK_GAME || gMain.ticks >= 30) {
+        extern void Port_Bios_TryStartupAutoResume(void);
+        Port_Bios_TryStartupAutoResume();
     }
 
     /* Speedrun practice: advance the IGT frame counter and sample the input

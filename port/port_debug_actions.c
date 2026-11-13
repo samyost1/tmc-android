@@ -30,6 +30,7 @@ void LoadItemGfx(void);
 void UpdatePlayerSkills(void);
 extern bool32 Port_IsRoomHeaderPtrReadable(const void* ptr);
 extern void Port_RefreshAreaData(unsigned int area);
+extern bool Port_Config_GetConsoleParity(void);
 /* Forward-declared here so this pure-C TU can call into port_flag_names.cpp
  * (which exports them as extern "C") without pulling in a C++ header. */
 extern const char* Port_DebugQuery_FlagName(int bank, int index);
@@ -192,6 +193,17 @@ void Port_DebugAction_MaxHearts(void) {
     gSave.stats.health = gSave.stats.maxHealth;
 }
 
+void Port_DebugAction_AddHeartContainer(void) {
+    if (gSave.stats.maxHealth < 0xA0) {
+        gSave.stats.maxHealth += 8;
+        if (gSave.stats.maxHealth > 0xA0) {
+            gSave.stats.maxHealth = 0xA0;
+        }
+    }
+    gSave.stats.health = gSave.stats.maxHealth;
+    gSave.stats.heartPieces = 0;
+}
+
 void Port_DebugAction_HealFull(void) {
     gSave.stats.health = gSave.stats.maxHealth;
 }
@@ -202,6 +214,96 @@ void Port_DebugAction_MaxRupees(void) {
 
 void Port_DebugAction_MaxShells(void) {
     gSave.stats.shells = 999;
+}
+
+void Port_DebugAction_RefillBombs(void) {
+    if (GetItem(ITEM_BOMBBAG) == 0 && gSave.stats.bombBagType == 0) {
+        SetItem(ITEM_BOMBBAG, 1);
+    }
+    int tier = gSave.stats.bombBagType & 3;
+    gSave.stats.bombCount = gBombBagSizes[tier];
+}
+
+void Port_DebugAction_RefillArrows(void) {
+    if (GetItem(ITEM_BOW) == 0 && GetItem(ITEM_LIGHT_ARROW) == 0) {
+        SetItem(ITEM_BOW, 1);
+    }
+    int tier = gSave.stats.quiverType & 3;
+    gSave.stats.arrowCount = gQuiverSizes[tier];
+}
+
+void Port_DebugAction_RefillDungeonKeys(void) {
+    int d = gArea.dungeon_idx;
+    if (d > 0 && d < 0x10) {
+        gSave.dungeonKeys[d] = 9;
+    } else {
+        int i;
+        for (i = 0; i < 0x10; i++) {
+            gSave.dungeonKeys[i] = 9;
+        }
+    }
+}
+
+static int sGodMode = 0;
+static int sInfiniteBombs = 0;
+static int sInfiniteArrows = 0;
+static int sInfiniteRupees = 0;
+
+void Port_Cheat_SetGodMode(int on) {
+    sGodMode = on ? 1 : 0;
+}
+int Port_Cheat_GetGodMode(void) {
+    return sGodMode;
+}
+int Port_Cheat_GodModeEnabled(void) {
+    if (Port_Config_GetConsoleParity())
+        return 0;
+    return sGodMode;
+}
+
+void Port_Cheat_SetInfiniteBombs(int on) {
+    sInfiniteBombs = on ? 1 : 0;
+    if (sInfiniteBombs) {
+        Port_DebugAction_RefillBombs();
+    }
+}
+int Port_Cheat_GetInfiniteBombs(void) {
+    return sInfiniteBombs;
+}
+int Port_Cheat_InfiniteBombsEnabled(void) {
+    if (Port_Config_GetConsoleParity())
+        return 0;
+    return sInfiniteBombs;
+}
+
+void Port_Cheat_SetInfiniteArrows(int on) {
+    sInfiniteArrows = on ? 1 : 0;
+    if (sInfiniteArrows) {
+        Port_DebugAction_RefillArrows();
+    }
+}
+int Port_Cheat_GetInfiniteArrows(void) {
+    return sInfiniteArrows;
+}
+int Port_Cheat_InfiniteArrowsEnabled(void) {
+    if (Port_Config_GetConsoleParity())
+        return 0;
+    return sInfiniteArrows;
+}
+
+void Port_Cheat_SetInfiniteRupees(int on) {
+    sInfiniteRupees = on ? 1 : 0;
+    if (sInfiniteRupees) {
+        Port_DebugAction_MaxRupees();
+    }
+}
+int Port_Cheat_GetInfiniteRupees(void) {
+    return sInfiniteRupees;
+}
+int Port_Cheat_InfiniteRupeesEnabled(void) {
+    if (Port_Config_GetConsoleParity())
+        return 0;
+    return sInfiniteRupees;
 }
 
 void Port_DebugAction_AllKinstones(void) {

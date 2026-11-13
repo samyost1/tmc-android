@@ -75,8 +75,10 @@
  * gDungeonFloorMetadatas has a header declaration). */
 extern const DungeonLayout* const* const gDungeonLayouts[];
 
-/* ROM map-data blob (port_linked_stubs.c, filled by Port_LoadRom). */
-extern u8 gMapData[];
+/* ROM map-data blob (port_linked_stubs.c, filled by Port_LoadRom).
+ * Declared via port_rom.h as `extern u8* gMapData;` on PC/Android (where it is
+ * a pointer into gRomData, NOT an array). */
+#include "port_rom.h"
 
 /* Raw-data accessors: src/common.c (palette groups, gfx groups, room
  * headers) and port/port_draw.c (frame pieces, OAM size table). */
@@ -270,7 +272,7 @@ static void BlitRoomShape(const DungeonLayout* lyt, uint32_t features, const uin
     const uint8_t* shape;
     uint32_t mapX, mapY, w, h, stride, x, y;
 
-    if (hdr == NULL) {
+    if (hdr == NULL || gMapData == NULL) {
         return;
     }
     shape = gMapData + Port_RemapMapOffset(lyt->mapDataOffset);

@@ -7,15 +7,36 @@ extern "C" {
 
 void Port_DebugAction_GiveAllItems(void);
 void Port_DebugAction_MaxHearts(void);
+void Port_DebugAction_AddHeartContainer(void);
 void Port_DebugAction_HealFull(void);
 void Port_DebugAction_MaxRupees(void);
 void Port_DebugAction_MaxShells(void);
+void Port_DebugAction_RefillBombs(void);
+void Port_DebugAction_RefillArrows(void);
+void Port_DebugAction_RefillDungeonKeys(void);
 void Port_DebugAction_AllKinstones(void);
 /* Figurine completion. The 130 variant grants all pre-credits figurines without
  * touching game-clear state; the 100 variant grants true 100% (136) but also
  * marks the game beaten (saw_staffroll), the only self-consistent full state. */
 void Port_DebugAction_AllFigurines130(void);
 void Port_DebugAction_AllFigurines100(void);
+
+/* Runtime gameplay cheats (in-memory toggles, suppressed under Console-Parity) */
+void Port_Cheat_SetGodMode(int on);
+int  Port_Cheat_GetGodMode(void);
+int  Port_Cheat_GodModeEnabled(void);
+
+void Port_Cheat_SetInfiniteBombs(int on);
+int  Port_Cheat_GetInfiniteBombs(void);
+int  Port_Cheat_InfiniteBombsEnabled(void);
+
+void Port_Cheat_SetInfiniteArrows(int on);
+int  Port_Cheat_GetInfiniteArrows(void);
+int  Port_Cheat_InfiniteArrowsEnabled(void);
+
+void Port_Cheat_SetInfiniteRupees(int on);
+int  Port_Cheat_GetInfiniteRupees(void);
+int  Port_Cheat_InfiniteRupeesEnabled(void);
 
 int Port_DebugAction_Warp(unsigned char area, unsigned char room,
                           unsigned short x, unsigned short y,

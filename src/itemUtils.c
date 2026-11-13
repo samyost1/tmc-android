@@ -272,6 +272,12 @@ void ModShells(s32 shells) {
 void ModBombs(s32 bombs) {
     s32 bombCount = bombs;
     s32 bagSize;
+#ifdef PC_PORT
+    extern int Port_Cheat_InfiniteBombsEnabled(void);
+    if (bombs < 0 && Port_Cheat_InfiniteBombsEnabled()) {
+        return;
+    }
+#endif
     bombCount += gSave.stats.bombCount;
     bagSize = gBombBagSizes[gSave.stats.bombBagType];
     if (bombCount < 0) {
@@ -285,6 +291,12 @@ void ModBombs(s32 bombs) {
 void ModArrows(s32 arrows) {
     s32 quiverSize;
     s32 arrowCount = arrows;
+#ifdef PC_PORT
+    extern int Port_Cheat_InfiniteArrowsEnabled(void);
+    if (arrows < 0 && Port_Cheat_InfiniteArrowsEnabled()) {
+        return;
+    }
+#endif
     arrowCount += gSave.stats.arrowCount;
     quiverSize = gQuiverSizes[gSave.stats.quiverType];
     if (arrowCount < 0) {

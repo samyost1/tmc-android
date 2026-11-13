@@ -14,6 +14,7 @@
 #include "player.h"
 #include "physics.h"
 #include "map.h"
+#include "manager/pushableFurnitureManager.h"
 
 extern const s16 gUnk_080B4488[];
 
@@ -200,7 +201,6 @@ void PushableFurniture_Action2(PushableFurnitureEntity* this) {
 
 bool32 sub_0808FC5C(PushableFurnitureEntity* this) {
     bool32 bVar2;
-    u8* puVar5;
 
     LinearMoveUpdate(super);
     if (--super->timer == 0) {
@@ -237,8 +237,7 @@ bool32 sub_0808FC5C(PushableFurnitureEntity* this) {
             SetFlag((u32)this->flag);
         } else {
             if ((this->unk_82 & 0x80) != 0) {
-                puVar5 = super->parent->spriteAnimation + 2;
-                *puVar5 = (1 << (this->unk_7a)) | *puVar5;
+                ((PushableFurnitureManager*)super->parent)->unk_28 |= (1 << (this->unk_7a));
             } else {
                 SetLocalFlag((u32)this->unk_82);
             }

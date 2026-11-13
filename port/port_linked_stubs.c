@@ -9,6 +9,7 @@
 #include "entity.h"
 #include "enemy.h"
 #include "fade.h"
+#include "game.h"
 
 #define gMapDataBottomSpecial gMapDataBottomSpecial_HIDDEN
 #include "fileselect.h"
@@ -1172,6 +1173,18 @@ int Port_Widescreen_CameraRestX(int target_x) {
     return want;
 }
 
+static int Port_Widescreen_IsTransitioning(void) {
+    if (gRoomTransition.transitioningOut != 0)
+        return 1;
+    if (gMain.substate == GAMEMAIN_CHANGEAREA ||
+        gMain.substate == GAMEMAIN_INITROOM ||
+        gMain.substate == GAMEMAIN_CHANGEROOM)
+        return 1;
+    if (gRoomControls.scrollAction == 2)
+        return 1;
+    return 0;
+}
+
 /* True while at least one BG shadow is registered for the current frame —
  * i.e. the map BGs are actually what the PPU is rendering. Overlay screens
  * (prologue storybook, pause/menu subscreens) swap the BG control regs away
@@ -1184,6 +1197,13 @@ int Port_Widescreen_ShadowsLive(void) {
         if (virtuappu_mode1_ws_shadow[i] != NULL) {
             return 1;
         }
+    }
+    /* If the game is in an area/room transition, don't drop to 0 just
+     * because DispReset / InitRoom / Scroll2 temporarily tore down or
+     * withheld map BGs. Keeping this 1 prevents the presentation
+     * viewport from snapping wide->240->wide and flickering the margins. */
+    if (gMain.task == TASK_GAME && Port_Widescreen_IsTransitioning()) {
+        return 1;
     }
     return 0;
 }
@@ -1283,8 +1303,10 @@ static int Port_WidescreenPpuBgForControl(u32 control) {
 
 /* Called per-VBlank from src/interrupts.c::UpdateDisplayControls. */
 void Port_Widescreen_UpdateShadows(void) {
-    for (int i = 0; i < MODE1_GBA_BG_COUNT; i++)
+    for (int i = 0; i < MODE1_GBA_BG_COUNT; i++) {
         virtuappu_mode1_ws_shadow[i] = NULL;
+        virtuappu_mode1_ws_shadow_base_tile[i] = -1;
+    }
     virtuappu_mode1_ws_hud_right_anchor = 0;
     virtuappu_mode1_ws_msg_shift = 0;
 
@@ -1310,6 +1332,7 @@ void Port_Widescreen_UpdateShadows(void) {
     }
 
     if (!Port_Widescreen_IsActive()) {
+        gba_write16(0x04000058, 0);
         return;
     }
     virtuappu_mode1_ws_hud_right_anchor = Port_Widescreen_HudRightAnchor();
@@ -1344,6 +1367,17 @@ void Port_Widescreen_UpdateShadows(void) {
         }
     }
 
+    if (gRoomControls.scrollAction == 2) {
+        /* Intra-area screen scroll transition (Scroll2): the engine is
+         * sliding the 240x160 native viewport across a seam between rooms.
+         * Only the incoming room's mapSpecial is in memory, so reveal
+         * columns cannot be coherently populated during the scroll.
+         * Leaving shadows NULL keeps the reveal margins cleanly black
+         * until the scroll finishes, preventing tile jitter and out-of-bounds
+         * corruption while preserving the wide presentation viewport. */
+        return;
+    }
+
     if (gMapBottom.bgSettings != NULL) {
         int bg = Port_WidescreenPpuBgForControl(gMapBottom.bgSettings->control);
         if (bg >= 0)
@@ -1353,6 +1387,25 @@ void Port_Widescreen_UpdateShadows(void) {
         int bg = Port_WidescreenPpuBgForControl(gMapTop.bgSettings->control);
         if (bg >= 0)
             Port_WidescreenShadow_Populate(bg, gMapDataTopSpecial, sWsShadowBG2);
+    }
+
+    /* BG3 overlays (dark-room darkness mask in LightManager, light rays, clouds,
+     * steam, Palace of Winds sky backdrop, etc.) use a 32x32 VRAM screenblock
+     * that tiles/wraps across the screen without a widescreen shadow buffer.
+     * Without extending its horizontal clip beyond 240 px, the overlay stops
+     * abruptly at x = 240 while BG1/BG2 render across the full widescreen room.
+     * Encode the room's right screen edge as a negative clip (-room_max_x < -1)
+     * in virtuappu_mode1_ws_shadow_base_tile[3] so BG3 wraps its 32x32 VRAM
+     * screenblock across the exact room width while preserving pillarboxes in
+     * narrower rooms. */
+    if (virtuappu_mode1_ws_shadow[3] == NULL &&
+        (virtuappu_mode1_ws_shadow[1] != NULL || virtuappu_mode1_ws_shadow[2] != NULL)) {
+        int view_w = Port_Widescreen_EffectiveViewWidth();
+        int room_max_x = (int)gRoomControls.origin_x + (int)gRoomControls.width - (int)gRoomControls.scroll_x;
+        if (room_max_x > view_w)
+            room_max_x = view_w;
+        if (room_max_x > MODE1_GBA_BG_CLIP_X)
+            virtuappu_mode1_ws_shadow_base_tile[3] = -room_max_x;
     }
 }
 #else

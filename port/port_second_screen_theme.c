@@ -1,5 +1,6 @@
 #include "port_second_screen_theme.h"
 
+#include "port_offset_remap.h"
 #include "port_rom.h"
 #include "region.h"
 #include "structures.h"
@@ -168,7 +169,7 @@ static const u8 kQuestObjGfxGroups[] = { 91u, 86u, 23u, 16u };
 #define SMALL_DIGIT_OBJ_BANK 4u
 
 /* Sprite indices. */
-#define SPRITE_HUD_BUTTONS 505u
+#define SPRITE_HUD_BUTTONS Port_RemapSpriteIndex(505u)
 #define SPRITE_PAUSE_MISC (REGION_IS_EU ? 0x1FAu : 0x1FBu)
 #define BUTTON_VRAM_SLOT 0x100u /* gUIElementDefinitions[BUTTON_*].unk_4 */
 #define CURSOR_FRAME_0 4u
@@ -177,11 +178,11 @@ static const u8 kQuestObjGfxGroups[] = { 91u, 86u, 23u, 16u };
 
 /* Contextual R-prompt labels (SPEAK / READ / LIFT / ...): sprite 322, the
  * same sheet the item icons come from — gUIElementDefinitions[TEXT_R] gives
- * spriteIndex 322 and OBJ slot 0x10E, and TextUIElement picks the frame from
- * gHUD.buttonText[2] plus the language offset (the snapshot publishes that
- * sum, so frameId arrives final). Pieces index tiles relative to the frame's
- * firstTileIndex, exactly like sub_0801CB20's DMA. */
-#define SPRITE_UI_LABELS 322u
+ * spriteIndex 322 (321 on EU) and OBJ slot 0x10E, and TextUIElement picks the
+ * frame from gHUD.buttonText[2] plus the language offset (the snapshot
+ * publishes that sum, so frameId arrives final). Pieces index tiles relative to
+ * the frame's firstTileIndex, exactly like sub_0801CB20's DMA. */
+#define SPRITE_UI_LABELS Port_RemapSpriteIndex(322u)
 
 /* Pause-menu labelled button (the SLEEP / SAVE plates of the quest-status
  * screen, drawn by sub_080A57F4 as sprite SPRITE_PAUSE_MISC frames
