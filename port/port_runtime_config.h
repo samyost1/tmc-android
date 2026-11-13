@@ -31,10 +31,20 @@ typedef enum {
     PORT_INPUT_SOFT_R2,
     /* One-button roll attack (port_roll_attack_macro.c). Default keyboard D. */
     PORT_INPUT_ROLL_ATTACK,
+    /* Fast-forward key/button (port_bios.c). Default keyboard Tab. */
+    PORT_INPUT_FAST_FORWARD,
     PORT_INPUT_COUNT,
 } PortInput;
 
 void Port_Config_Load(const char* path);
+bool Port_Config_GetFastForwardToggle(void);
+void Port_Config_SetFastForwardToggle(bool toggle);
+float Port_Config_GetFastForwardSpeed(void);
+void Port_Config_SetFastForwardSpeed(float speed);
+bool Port_Config_GetAutoSaveOnExit(void);
+void Port_Config_SetAutoSaveOnExit(bool enable);
+bool Port_Config_GetAutoLoadOnStartup(void);
+void Port_Config_SetAutoLoadOnStartup(bool enable);
 u8 Port_Config_WindowScale(void);
 const char* Port_Config_UpscaleMethod(void);
 u64 Port_Config_FrameTimeNs(void);
@@ -320,6 +330,18 @@ void Port_Config_SetRandoAccessibility(int accessibility);
 bool Port_Config_GetRandoDungeonItems(void);
 void Port_Config_SetRandoDungeonItems(bool dungeon_items);
 
+/* RetroAchievements (port_ra.c). Opt-in: ra_enabled defaults false so no
+ * network traffic happens unless the user asks for it. Only the RA session
+ * token is persisted — the password is never stored. */
+bool Port_Config_GetRaEnabled(void);
+void Port_Config_SetRaEnabled(bool on);
+bool Port_Config_GetRaNotifications(void);
+void Port_Config_SetRaNotifications(bool on);
+const char* Port_Config_GetRaUsername(void);
+void Port_Config_SetRaUsername(const char* v);
+const char* Port_Config_GetRaToken(void);
+void Port_Config_SetRaToken(const char* v);
+
 void Port_Config_OpenGamepads(void);
 #ifndef TMC_N64
 void Port_Config_HandleEvent(const SDL_Event* e);
@@ -383,6 +405,12 @@ void Port_Config_SetKeyboardBindExclusive(PortInput input, int sdl_keycode);
 void Port_Config_FormatGamepadBindingsLine(PortInput input, char* out, size_t outCap);
 void Port_Config_SetGamepadBindExclusive(PortInput input, int sdl_gamepad_button);
 #endif
+
+/* Debug flag notifications (persisted to config.json as "debug_flag_notifications").
+ * When enabled every flag that flips 0->1 (engine SetLocalFlagByBank or the F8
+ * flag browser) prints a line to stderr and fires an on-screen toast. Default false. */
+bool Port_Config_GetDebugFlagNotifications(void);
+void Port_Config_SetDebugFlagNotifications(bool on);
 
 #ifdef __cplusplus
 }

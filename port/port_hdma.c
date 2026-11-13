@@ -66,6 +66,10 @@ void port_hdma_unregister(int channel) {
         return;
     }
     s_channels[channel].active = 0;
+    if (channel == 0) {
+        extern void gba_write16(uint32_t addr, uint16_t v);
+        gba_write16(0x04000058, 0);
+    }
 }
 
 int port_hdma_has_active_channels(void) {
@@ -105,10 +109,19 @@ int port_hdma_dest_overlaps(const void* lo, const void* hi) {
     return 0;
 }
 
+/*
+ * Hardware fires HBlank DMA at the *end* of a scanline, so transfer k (made
+ * during line k's HBlank) takes effect on line k+1: line N renders table
+ * entry N-1. Line 0 renders entry 0 too, because PerformVBlankDMA
+ * (src/interrupts.c, GBA path) copies the first transfer's units into the
+ * registers by hand right after arming the DMA -- the "why is it copied
+ * again?" loop is that seed. This callback runs before line N is drawn, so
+ * line 0 performs the seed (transfer entry 0, then rewind) and lines 1..159
+ * perform transfers 0..158; transfer 159 lands in VBlank and is invisible.
+ */
 void port_hdma_step_line(int line) {
     int ch;
 
-    (void)line;
     for (ch = 0; ch < HDMA_CHANNELS; ++ch) {
         HdmaChannel* c = &s_channels[ch];
         uint8_t* d;
@@ -131,6 +144,10 @@ void port_hdma_step_line(int line) {
         /* Between scanlines: RELOAD rewinds to dest_orig; INC keeps the
          * advanced pointer; FIXED stayed put anyway. */
         c->dest = (c->dest_mode == DEST_RELOAD) ? c->dest_orig : d;
+        if (line == 0) {
+            c->src = c->src_orig;
+            c->dest = c->dest_orig;
+        }
     }
 }
 

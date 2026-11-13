@@ -103,7 +103,9 @@ void SortKinstoneBag(void);
 
 extern void* GetRoomProperty(u32, u32, u32);
 
-extern u8 gMapData[];
+#ifndef PC_PORT
+extern u8 gMapData[]; /* PC: u8* declared in port_rom.h */
+#endif
 extern const DungeonLayout* const* const gDungeonLayouts[];
 extern u16 gMapDataBottomSpecial[];
 
@@ -594,7 +596,19 @@ void LoadGfxGroup(u32 group) {
                     LZ77UnCompWram(src, (void*)dest);
                 }
             } else {
+#ifdef PC_PORT
+                /* Mirror port_asset_loader: gMapTop/gMapBottom/gMapData*Special are
+                 * native globals outside gEwram[], which only Port_ResolveEwramPtr
+                 * knows; DmaSet would write the flat mirror instead. */
+                void* nativeDest = (dest >= 0x02000000u && dest < 0x02040000u) ? Port_ResolveEwramPtr(dest) : NULL;
+                if (nativeDest != NULL) {
+                    memcpy(nativeDest, src, (u32)size & ~1u);
+                } else {
+                    DmaSet(3, src, dest, dmaCtrl | ((u32)size >> 1));
+                }
+#else
                 DmaSet(3, src, dest, dmaCtrl | ((u32)size >> 1));
+#endif
             }
         }
 
@@ -767,6 +781,9 @@ void DispReset(bool32 refresh) {
     gScreen.vBlankDMA.ready = FALSE;
     DmaStop(0);
 #ifdef PC_PORT
+    /* DmaStop(0) is a host no-op; retail stops DMA0 here after the room-exit
+     * fade, so per-scanline affine HDMA must not leak into the next room. */
+    port_hdma_unregister(0);
     gba_write16(REG_ADDR_DISPCNT, 0);
 #else
     REG_DISPCNT = 0;
@@ -1121,6 +1138,7 @@ void sub_0801E104(void) {
        whole class of sub_0801E104-only teardowns: lightManager (dark-room end),
        whiteTriangleEffect (screen wipe), vaatiAppearingManager Evaporate. */
     port_hdma_unregister(0);
+    gba_write16(0x04000058, 0);
 #endif
 }
 
@@ -1130,6 +1148,9 @@ void sub_0801E120(void) {
     gScreen.controls.windowOutsideControl = 0x3F;
     gScreen.controls.window0HorizontalDimensions = 0;
     gScreen.controls.window0VerticalDimensions = 160;
+#ifdef PC_PORT
+    gba_write16(0x04000058, 0);
+#endif
 }
 
 void sub_0801E154(u32 a1) {
@@ -1150,6 +1171,9 @@ void sub_0801E1B8(u32 a1, u32 a2) {
     gScreen.controls.windowOutsideControl = a2;
     gScreen.controls.window0HorizontalDimensions = 0;
     gScreen.controls.window0VerticalDimensions = 160;
+#ifdef PC_PORT
+    gba_write16(0x04000058, 0);
+#endif
 }
 
 void sub_0801E1EC(u32 a1, u32 a2, u32 a3) {
@@ -1194,15 +1218,26 @@ void sub_0801E290(u32 param_1, u32 param_2, u32 count) {
 #ifdef PC_PORT
     /* On GBA, pointer arithmetic wraps at 32 bits, so starting from filler[-2]
      * (param_2=0xFFFFFFFF) works. On 64-bit, that produces an invalid address.
-     * Use index-based access instead of pointer incrementing. */
+     * Use index-based access instead of pointer incrementing.
+     * In widescreen (> 240 px), WIN0H packs left/right as 8-bit u8 bytes and
+     * clamps right at 0xF0 (240). When the spotlight center param_1 > 120,
+     * shift center to 120 so [left, right] stays cleanly inside 0..240 and
+     * publish the horizontal offset in unused GBA I/O 0x58 for the PPU. */
     u8* base = ((struct_02017AA0*)gUnk_02017AA0)[gUnk_03003DE4[0]].filler;
+    s32 center_x = (s32)param_1;
+    s32 win0_ofs = 0;
+    if (center_x > 120) {
+        win0_ofs = center_x - 120;
+        center_x = 120;
+    }
+    gba_write16(0x04000058, (uint16_t)(int16_t)win0_ofs);
     uVar5 = uVar7 = param_2;
     puVar6 = gUnk_02018EE0;
 
     while (count-- > 0) {
         uVar1 = *puVar6++;
-        iVar2 = param_1 - uVar1;
-        iVar4 = param_1 + uVar1;
+        iVar2 = center_x - uVar1;
+        iVar4 = center_x + uVar1;
         if (iVar2 < 0) {
             iVar2 = 0;
         }
@@ -1588,9 +1623,9 @@ void UpdateVisibleFusionMapMarkers(void) {
     }
 }
 
-/* This table is packed 4-byte GBA pointers; `gUnk_08001DCC[idx]` would
- * read 8 bytes on x86-64. Use Port_UnpackRomDataPtr instead. */
+#ifndef PC_PORT
 extern const u8 gUnk_08001DCC[];
+#endif
 
 KinstoneId GetFusionToOffer(Entity* entity) {
     u8* fuserData;
@@ -1603,7 +1638,7 @@ KinstoneId GetFusionToOffer(Entity* entity) {
     fuserId = GetFuserId(entity);
 
 #ifdef PC_PORT
-    fuserData = (u8*)Port_UnpackRomDataPtr(gUnk_08001DCC, fuserId);
+    fuserData = (u8*)Port_GetFuserFusionData(fuserId);
 #else
     fuserData = (u8*)((u8**)gUnk_08001DCC)[fuserId];
 #endif

@@ -9,6 +9,7 @@
 #include "entity.h"
 #include "enemy.h"
 #include "fade.h"
+#include "game.h"
 
 #define gMapDataBottomSpecial gMapDataBottomSpecial_HIDDEN
 #include "fileselect.h"
@@ -32,6 +33,7 @@
 
 #include "port_entity_ctx.h"
 #include "port_gba_mem.h"
+#include "port_rom.h"
 #include "port_runtime_config.h"
 #include "port_widescreen.h"
 
@@ -70,7 +72,9 @@ u8 gUnk_02006F00[0x4000] __attribute__((aligned(4)));                    /* BG t
 u16 gUnk_0200B640;                                                       /* scroll state scalar */
 u16 gUnk_02017830[0x138] __attribute__((aligned(4)));                    /* palette rotation buffer (624 bytes) */
 u16 gUnk_02017AA0[0xA00] __attribute__((aligned(4)));                    /* HBlank DMA double buffer, 2×0xA00 bytes */
-struct BgAffineDstData gUnk_02017BA0[0x140] __attribute__((aligned(4))); /* BG2 affine ref lines */
+/* gUnk_02017BA0 is NOT a separate object: on GBA 0x02017BA0 == 0x02017AA0 + 0x100, entry 16 of the
+ * same BgAffineDstData table. rollingBarrelManager.c (its only reader) indexes gUnk_02017AA0 directly
+ * under PC_PORT, so no standalone (and never-written) definition here. */
 LinkedList2* gUnk_02018EA0 = NULL;
 struct_02018EB0 gUnk_02018EB0;
 s16 gUnk_02018EE0[0x800] __attribute__((aligned(4))); /* window rasterization scratch */
@@ -155,15 +159,15 @@ u32 gFrameObjLists[50016];
 
 // gMapData — map data blob, backed by ROM data.
 // On GBA this is a label in .rodata at gAreaRoomMap_None (~14MB region).
-// On PC, we use a large buffer filled from ROM in Port_LoadRom().
-// Source files use &gMapData + offset, so this must be an array (not a pointer).
+// On PC it points into gRomData (set in Port_LoadRom()); source files only
+// compute gMapData + offset, so a pointer is sufficient and avoids a 14 MB copy.
 #ifdef TMC_N64
 /* #N64: the ~14 MB ROM map-data window can't live in 8 MB RDRAM. Temporary 1 MB
  * placeholder so the binary links and boots to the title (which doesn't read map
  * data). Phase 3 backs &gMapData with the embedded cart ROM (PI/DFS), not a RAM copy. */
 u8 gMapData[0x100000] __attribute__((aligned(4))); /* 1 MB placeholder */
 #else
-u8 gMapData[0xE00000] __attribute__((aligned(4))); /* ~14 MB */
+u8* gMapData = NULL;
 #endif
 
 // gCollisionMtx — On GBA, the collision matrix label sits at 0x080B7B74 with
@@ -498,7 +502,6 @@ extern const u8 gUnk_080083FC[];
 extern const u8 gUnk_0800845C[];
 extern const u8 gUnk_080084BC[];
 extern const u8 gUnk_0800851C[];
-extern u8 gUnk_0800823C[];
 
 static const u8* sActiveCollisionParams = gUnk_080082DC;
 u32 GetCollisionDataAtTilePos(u32 tilePos, u32 layer);
@@ -570,10 +573,7 @@ static u32 TileCollisionLookup(u32 px, u32 py, Entity* entity) {
         return 1;
     }
 
-    u8 idx = sActiveCollisionParams[tileType - 0x10];
-    u32 gbaAddr;
-    memcpy(&gbaAddr, &gUnk_0800823C[(u32)idx << 2], sizeof(gbaAddr));
-    const u16* table = (const u16*)port_resolve_addr((uintptr_t)gbaAddr);
+    const u16* table = (const u16*)Port_GetCollisionShapeData(sActiveCollisionParams[tileType - 0x10]);
     if (table == NULL) {
         return 0;
     }
@@ -731,7 +731,7 @@ u32 LinearMoveDirectionOLD(Entity* ent, u32 speed, u32 direction) {
 
     /* X movement */
     if (!(masked & 0xEE00)) {
-        s16 sinVal = gSineTable[direction * 8];
+        s16 sinVal = gSineTable[(direction & 0x1F) * 8];
         if (sinVal != 0) {
             moved |= 1;
             s32 dx = FixedMul(sinVal, (s16)speed) << 8;
@@ -741,7 +741,7 @@ u32 LinearMoveDirectionOLD(Entity* ent, u32 speed, u32 direction) {
 
     /* Y movement */
     if (!(masked & 0x00EE)) {
-        s16 cosVal = gSineTable[direction * 8 + 64];
+        s16 cosVal = gSineTable[(direction & 0x1F) * 8 + 64];
         if (cosVal != 0) {
             moved |= 2;
             s32 dy = FixedMul(cosVal, (s16)speed) << 8;
@@ -785,8 +785,8 @@ void sub_08008AA0(Entity* ent) {
     u8 dir = gPlayerState.direction;
     if (dir == 0xFF)
         return;
-    gPlayerState.vel_x = gSineTable[dir * 8];
-    gPlayerState.vel_y = -gSineTable[dir * 8 + 64];
+    gPlayerState.vel_x = gSineTable[(dir & 0x1F) * 8];
+    gPlayerState.vel_y = -gSineTable[(dir & 0x1F) * 8 + 64];
 }
 
 /*
@@ -1173,6 +1173,18 @@ int Port_Widescreen_CameraRestX(int target_x) {
     return want;
 }
 
+static int Port_Widescreen_IsTransitioning(void) {
+    if (gRoomTransition.transitioningOut != 0)
+        return 1;
+    if (gMain.substate == GAMEMAIN_CHANGEAREA ||
+        gMain.substate == GAMEMAIN_INITROOM ||
+        gMain.substate == GAMEMAIN_CHANGEROOM)
+        return 1;
+    if (gRoomControls.scrollAction == 2)
+        return 1;
+    return 0;
+}
+
 /* True while at least one BG shadow is registered for the current frame —
  * i.e. the map BGs are actually what the PPU is rendering. Overlay screens
  * (prologue storybook, pause/menu subscreens) swap the BG control regs away
@@ -1185,6 +1197,13 @@ int Port_Widescreen_ShadowsLive(void) {
         if (virtuappu_mode1_ws_shadow[i] != NULL) {
             return 1;
         }
+    }
+    /* If the game is in an area/room transition, don't drop to 0 just
+     * because DispReset / InitRoom / Scroll2 temporarily tore down or
+     * withheld map BGs. Keeping this 1 prevents the presentation
+     * viewport from snapping wide->240->wide and flickering the margins. */
+    if (gMain.task == TASK_GAME && Port_Widescreen_IsTransitioning()) {
+        return 1;
     }
     return 0;
 }
@@ -1284,8 +1303,10 @@ static int Port_WidescreenPpuBgForControl(u32 control) {
 
 /* Called per-VBlank from src/interrupts.c::UpdateDisplayControls. */
 void Port_Widescreen_UpdateShadows(void) {
-    for (int i = 0; i < MODE1_GBA_BG_COUNT; i++)
+    for (int i = 0; i < MODE1_GBA_BG_COUNT; i++) {
         virtuappu_mode1_ws_shadow[i] = NULL;
+        virtuappu_mode1_ws_shadow_base_tile[i] = -1;
+    }
     virtuappu_mode1_ws_hud_right_anchor = 0;
     virtuappu_mode1_ws_msg_shift = 0;
 
@@ -1311,6 +1332,7 @@ void Port_Widescreen_UpdateShadows(void) {
     }
 
     if (!Port_Widescreen_IsActive()) {
+        gba_write16(0x04000058, 0);
         return;
     }
     virtuappu_mode1_ws_hud_right_anchor = Port_Widescreen_HudRightAnchor();
@@ -1323,26 +1345,37 @@ void Port_Widescreen_UpdateShadows(void) {
      * frame left the right border outside the shifted copy (overdrawn by the
      * interior) and the bottom border row outside the y-band (torn by the
      * HUD right-anchor remap). Clamp to the native canvas. */
-    if ((gMessage.state & MESSAGE_ACTIVE) != 0) {
-        int x0 = (int)gMessage.textWindowPosX * 8;
-        int x1 = ((int)gMessage.textWindowPosX + (int)gMessage.textWindowWidth + 2) * 8;
-        int y0 = (int)gMessage.textWindowPosY * 8;
-        int y1 = ((int)gMessage.textWindowPosY + (int)gMessage.textWindowHeight + 2) * 8;
-        if (x0 < 0)
-            x0 = 0;
-        if (x1 > 240)
-            x1 = 240;
-        if (y0 < 0)
-            y0 = 0;
-        if (y1 > 160)
-            y1 = 160;
-        if (x1 > x0 && y1 > y0) {
-            virtuappu_mode1_ws_msg_x0 = x0;
-            virtuappu_mode1_ws_msg_x1 = x1;
-            virtuappu_mode1_ws_msg_y0 = y0;
-            virtuappu_mode1_ws_msg_y1 = y1;
-            virtuappu_mode1_ws_msg_shift = (Port_Widescreen_EffectiveViewWidth() - 240) / 2;
+    {
+        extern int Port_Message_WindowRect(int*, int*, int*, int*);
+        int x0, y0, x1, y1;
+        if ((gMessage.state & MESSAGE_ACTIVE) != 0 && Port_Message_WindowRect(&x0, &y0, &x1, &y1)) {
+            if (x0 < 0)
+                x0 = 0;
+            if (x1 > 240)
+                x1 = 240;
+            if (y0 < 0)
+                y0 = 0;
+            if (y1 > 160)
+                y1 = 160;
+            if (x1 > x0 && y1 > y0) {
+                virtuappu_mode1_ws_msg_x0 = x0;
+                virtuappu_mode1_ws_msg_x1 = x1;
+                virtuappu_mode1_ws_msg_y0 = y0;
+                virtuappu_mode1_ws_msg_y1 = y1;
+                virtuappu_mode1_ws_msg_shift = (Port_Widescreen_EffectiveViewWidth() - 240) / 2;
+            }
         }
+    }
+
+    if (gRoomControls.scrollAction == 2) {
+        /* Intra-area screen scroll transition (Scroll2): the engine is
+         * sliding the 240x160 native viewport across a seam between rooms.
+         * Only the incoming room's mapSpecial is in memory, so reveal
+         * columns cannot be coherently populated during the scroll.
+         * Leaving shadows NULL keeps the reveal margins cleanly black
+         * until the scroll finishes, preventing tile jitter and out-of-bounds
+         * corruption while preserving the wide presentation viewport. */
+        return;
     }
 
     if (gMapBottom.bgSettings != NULL) {
@@ -1354,6 +1387,25 @@ void Port_Widescreen_UpdateShadows(void) {
         int bg = Port_WidescreenPpuBgForControl(gMapTop.bgSettings->control);
         if (bg >= 0)
             Port_WidescreenShadow_Populate(bg, gMapDataTopSpecial, sWsShadowBG2);
+    }
+
+    /* BG3 overlays (dark-room darkness mask in LightManager, light rays, clouds,
+     * steam, Palace of Winds sky backdrop, etc.) use a 32x32 VRAM screenblock
+     * that tiles/wraps across the screen without a widescreen shadow buffer.
+     * Without extending its horizontal clip beyond 240 px, the overlay stops
+     * abruptly at x = 240 while BG1/BG2 render across the full widescreen room.
+     * Encode the room's right screen edge as a negative clip (-room_max_x < -1)
+     * in virtuappu_mode1_ws_shadow_base_tile[3] so BG3 wraps its 32x32 VRAM
+     * screenblock across the exact room width while preserving pillarboxes in
+     * narrower rooms. */
+    if (virtuappu_mode1_ws_shadow[3] == NULL &&
+        (virtuappu_mode1_ws_shadow[1] != NULL || virtuappu_mode1_ws_shadow[2] != NULL)) {
+        int view_w = Port_Widescreen_EffectiveViewWidth();
+        int room_max_x = (int)gRoomControls.origin_x + (int)gRoomControls.width - (int)gRoomControls.scroll_x;
+        if (room_max_x > view_w)
+            room_max_x = view_w;
+        if (room_max_x > MODE1_GBA_BG_CLIP_X)
+            virtuappu_mode1_ws_shadow_base_tile[3] = -room_max_x;
     }
 }
 #else
@@ -1703,12 +1755,15 @@ u32 GetActTileRelativeToEntity(Entity* entity, s32 xOffset, s32 yOffset) {
  * tileType >= 0x4000 → gMapSpecialTileToActTile[tileType - 0x4000]
  */
 extern const u8 gMapTileTypeToActTile[];
-extern const u16 gUnk_080B7A3E[]; /* gMapSpecialTileToActTile */
+extern const u8 gMapSpecialTileToActTile[];
+extern const u16 gUnk_080B7A3E[];
 u32 GetActTileForTileType(u32 tileType) {
     if (tileType < 0x4000)
         return GetMapTileTypeToActTile(tileType);
     else
-        return ((const u8*)gUnk_080B7A3E)[tileType - 0x4000];
+        /* arm_GetActTileForTileType ldrb's gMapSpecialTileToActTile; gUnk_080B7A3E
+         * is the separate u16 special-tile property table (see sub_080B1B84). */
+        return gMapSpecialTileToActTile[tileType - 0x4000];
 }
 
 /* ---------- CollisionData family ---------- */
@@ -1817,16 +1872,12 @@ u32 GetTileTypeRelativeToEntity(Entity* entity, s32 xOffset, s32 yOffset) {
  * Calls GetTileTypeAtTilePos, then indexes into gUnk_08000360 or gUnk_080B7A3E
  * (based on whether tileType < 0x4000 or not) as a u16 array.
  */
+static u32 TileTypeProperty(u32 tileType) {
+    return tileType < 0x4000 ? Port_GetTileTypeProperty(tileType) : gUnk_080B7A3E[tileType & 0x3FFF];
+}
+
 u32 sub_080B1B84(u32 tilePos, u32 layer) {
-    u32 tileType = GetTileTypeAtTilePos(tilePos, layer);
-    const u16* table;
-    if (tileType < 0x4000) {
-        /* gUnk_08000360 is at ROM offset 0x360 */
-        table = (const u16*)&gRomData[0x360];
-    } else {
-        table = gUnk_080B7A3E;
-    }
-    return table[tileType & 0x3FFF];
+    return TileTypeProperty(GetTileTypeAtTilePos(tilePos, layer));
 }
 
 /**
@@ -1839,23 +1890,16 @@ u32 sub_080B1B84(u32 tilePos, u32 layer) {
  * live on LAYER_TOP while the player walks on LAYER_BOTTOM, so the check
  * silently fails. If the queried layer returns 0 for the masked flag, fall
  * back to the OTHER layer — keeps existing behaviour when the property is
- * already present on the queried layer.
+ * already present on the queried layer. Only for the lantern mask 0x40:
+ * movement, roof priority, climbing and projectile masks must not borrow
+ * properties from a different collision layer.
  */
 u32 sub_080B1BA4(u32 tilePos, u32 layer, u32 mask) {
-    u32 tileType = GetTileTypeAtTilePos(tilePos, layer);
-    const u16* table;
-    if (tileType < 0x4000) {
-        table = (const u16*)&gRomData[0x360];
-    } else {
-        table = gUnk_080B7A3E;
-    }
-    u32 r = table[tileType & 0x3FFF] & mask;
+    u32 r = TileTypeProperty(GetTileTypeAtTilePos(tilePos, layer)) & mask;
 #ifdef PC_PORT
-    if (r == 0) {
+    if (r == 0 && mask == 0x40) {
         u32 other = (layer == 2) ? 1 : 2;
-        u32 tt2 = GetTileTypeAtTilePos(tilePos, other);
-        const u16* t2 = (tt2 < 0x4000) ? (const u16*)&gRomData[0x360] : gUnk_080B7A3E;
-        r = t2[tt2 & 0x3FFF] & mask;
+        r = TileTypeProperty(GetTileTypeAtTilePos(tilePos, other)) & mask;
     }
 #endif
     return r;
@@ -1973,11 +2017,14 @@ void CloneTile(u32 tileType, u32 tilePos, u32 layer) {
 /**
  * Transition tile table entry for layer transitions.
  * (from ARM asm at 0x08016A90 / gTransitionTiles)
+ *
+ * preservedLayer: an entity already on this layer stays put; any other layer
+ * moves to destinationLayer.
  */
 typedef struct {
     u16 actTile;
-    u8 fromLayer;
-    u8 toLayer;
+    u8 preservedLayer;
+    u8 destinationLayer;
 } TransitionTileEntry;
 
 static const TransitionTileEntry sTransitionTiles[] = {
@@ -2010,7 +2057,7 @@ u32 ResolveCollisionLayer(Entity* entity) {
             const TransitionTileEntry* p = sResolveCollisionLayerTiles;
             while (p->actTile != 0) {
                 if (actTile == p->actTile) {
-                    newLayer = p->toLayer;
+                    newLayer = p->destinationLayer;
                     break;
                 }
                 p++;
@@ -2027,14 +2074,20 @@ u32 ResolveCollisionLayer(Entity* entity) {
  * (port of ARM asm at 0x08016A68)
  *
  * Returns the act tile at the entity's position (preserved in r0 in ARM code).
+ *
+ * Retail: `cmp r3, r5; beq not_found` — if the current layer equals byte 2 of
+ * the record the layer is preserved, otherwise byte 3 is written. Records
+ * 0x52/0x27/0x26 are {3,3}: they move an entity from layer 1/2 onto layer 3.
+ * With the comparison reversed (c8dfdb16d) those records could only ever fire
+ * for an entity already on layer 3, making them inert.
  */
 u32 CheckOnLayerTransition(Entity* entity) {
     u32 actTile = GetActTileAtEntity(entity);
     const TransitionTileEntry* p = sTransitionTiles;
     while (p->actTile != 0) {
         if (p->actTile == actTile) {
-            if (entity->collisionLayer == p->fromLayer) {
-                entity->collisionLayer = p->toLayer;
+            if (entity->collisionLayer != p->preservedLayer) {
+                entity->collisionLayer = p->destinationLayer;
             }
             return actTile;
         }
@@ -2046,10 +2099,14 @@ u32 CheckOnLayerTransition(Entity* entity) {
 /**
  * UpdateCollisionLayer — check layer transition and update sprite priority.
  * (port of ARM asm at 0x08016AB4)
+ *
+ * Returns the pre-transition act tile from CheckOnLayerTransition (the asm
+ * pushes r0 around UpdateSpriteForCollisionLayer and pops it back).
  */
-void UpdateCollisionLayer(Entity* entity) {
-    CheckOnLayerTransition(entity);
+u32 UpdateCollisionLayer(Entity* entity) {
+    u32 actTile = CheckOnLayerTransition(entity);
     UpdateSpriteForCollisionLayer(entity);
+    return actTile;
 }
 
 /**
@@ -2076,8 +2133,9 @@ u32 GetTileHazardType(Entity* entity) {
     if (entity->action == 0)
         return 0;
 
-    UpdateCollisionLayer(entity);
-    u32 actTile = GetActTileAtEntity(entity);
+    /* Classify the act tile CheckOnLayerTransition saw, not a re-read after the
+     * layer may have changed — at a boundary that reads a different floor. */
+    u32 actTile = UpdateCollisionLayer(entity);
 
     /* Check z position — if entity is in the air, no hazard */
     if ((s16)entity->z.HALF.HI < 0)

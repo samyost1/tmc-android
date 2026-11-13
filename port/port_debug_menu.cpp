@@ -25,6 +25,7 @@
 #include <vector>
 
 #include "port_debug_menu.h"
+#include "port_imgui_menu.h"
 #include "port_debug_query.h"
 #include "port_debug_actions.h"
 #include "port_widescreen.h"
@@ -154,7 +155,7 @@ constexpr int kVisibleItemsMax = 18;
 
 std::vector<MenuPage> sPageStack;
 std::string sToast; /* Temporary message shown at bottom of screen. */
-unsigned int sToastUntilTicks = 0;
+Uint64 sToastUntilTicks = 0; /* SDL_GetTicks() is Uint64 in SDL3. */
 
 /* Items in sPageStack store std::function lambdas. Clearing the stack
  * inside one of those lambdas would destroy the std::function whose body
@@ -259,17 +260,17 @@ void DoWarp(unsigned char area, unsigned char room, unsigned short x = 0x80, uns
 MenuPage BuildItemsPage(void) {
     MenuPage p;
     p.title = "ITEMS";
-    p.items.push_back({ "Unlock all items", []() {
-                           Port_DebugAction_GiveAllItems();
-                           Toast("All items granted");
+    p.items.push_back({ "Heal to full", []() {
+                           Port_DebugAction_HealFull();
+                           Toast("Healed");
                        } });
     p.items.push_back({ "Max heart containers", []() {
                            Port_DebugAction_MaxHearts();
                            Toast("Hearts maxed");
                        } });
-    p.items.push_back({ "Heal to full", []() {
-                           Port_DebugAction_HealFull();
-                           Toast("Healed");
+    p.items.push_back({ "Unlock all items", []() {
+                           Port_DebugAction_GiveAllItems();
+                           Toast("All items granted");
                        } });
     p.items.push_back({ "999 rupees", []() {
                            Port_DebugAction_MaxRupees();
@@ -1246,7 +1247,9 @@ extern "C" void Port_DebugMenu_Toggle(void) {
     } else {
         sOpen = true;
         sPageStack.clear();
-        sPageStack.push_back(BuildMainPage());
+        if (!Port_ImGui_RibbonEnabled()) {
+            sPageStack.push_back(BuildMainPage());
+        }
     }
 }
 
@@ -1255,6 +1258,9 @@ extern "C" bool Port_DebugMenu_IsOpen(void) {
 }
 
 extern "C" bool Port_DebugMenu_HandleKey(int sdlKey) {
+    if (Port_ImGui_RibbonEnabled()) {
+        return false;
+    }
     if (!sOpen || sPageStack.empty()) {
         return false;
     }

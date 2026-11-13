@@ -36,3 +36,15 @@ extern "C" JNIEXPORT void JNICALL Java_dev_picori_tmc_SecondScreenManager_native
     JNIEnv* /*env*/, jobject /*thiz*/, jboolean onSecondary) {
     Port_SecondScreen_SetGameOnSecondaryDisplay(onSecondary ? 1 : 0);
 }
+
+#include <android/log.h>
+#include "port_quicksave.h"
+#include "port_runtime_config.h"
+
+extern "C" JNIEXPORT void JNICALL
+Java_dev_picori_tmc_TMCActivity_nativeOnLifecyclePause(JNIEnv* /*env*/, jclass /*clazz*/) {
+    if (Port_Config_GetAutoSaveOnExit()) {
+        __android_log_print(ANDROID_LOG_INFO, "TMC", "[lifecycle] nativeOnLifecyclePause auto-saving resume state");
+        Port_QuickSave_RequestLifecycleAutoResume();
+    }
+}

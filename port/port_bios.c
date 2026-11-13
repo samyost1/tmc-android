@@ -14,6 +14,9 @@
 #include "port_imgui_menu.h"
 #include "port_ppu.h"
 #include "port_rom.h"
+#ifdef TMC_RA
+#include "port_ra.h"
+#endif
 #include "port_practice.h"
 #include "port_runtime_config.h"
 #include "port_roll_attack_macro.h"
@@ -21,7 +24,7 @@
 #include "port_touch_controls.h"
 #include "port_tts.h"
 #include "rando/rando_file_menu.h"
-#include "port_types.h"
+#include "port_level_editor.h"
 #include <SDL3/SDL.h>
 #include <math.h>
 #include <setjmp.h>
@@ -30,6 +33,42 @@
 static bool gQuitRequested = false;
 static bool sFastForward = false;
 static int sFrameNum = 0;
+
+bool Port_Bios_IsFastForward(void) {
+    return __atomic_load_n(&sFastForward, __ATOMIC_RELAXED);
+}
+
+void Port_Bios_SetFastForward(bool on) {
+    bool prev = __atomic_load_n(&sFastForward, __ATOMIC_RELAXED);
+    __atomic_store_n(&sFastForward, on, __ATOMIC_RELAXED);
+    if (prev != on) {
+        extern void Port_RollAttackMacro_Reset(void);
+        Port_RollAttackMacro_Reset();
+    }
+}
+
+static bool sAutoResumeAttempted = false;
+
+void Port_Bios_ResetAutoResume(void) {
+    sAutoResumeAttempted = false;
+}
+
+void Port_Bios_TryStartupAutoResume(void) {
+    if (sAutoResumeAttempted)
+        return;
+    sAutoResumeAttempted = true;
+    if (Port_Config_GetAutoLoadOnStartup()) {
+        extern int Port_QuickSave_HasAutoResume(void);
+        extern int Port_QuickSave_LoadAutoResume(void);
+        if (Port_QuickSave_HasAutoResume()) {
+            if (Port_QuickSave_LoadAutoResume()) {
+                fprintf(stderr, "[autosave] auto-loaded resume state on startup\n");
+                extern void Port_DebugMenu_ToastFromExternal(const char*);
+                Port_DebugMenu_ToastFromExternal("Auto-resume loaded");
+            }
+        }
+    }
+}
 
 /* Soft-reset re-entry. AgbMain arms this with setjmp() at the top of the
  * game loop; SoftReset() longjmp()s back to re-run AgbMain's init (which
@@ -118,17 +157,37 @@ static void Port_UpdateInput(void) {
      * one item-get cutscene and holds it so TMC_PROFILE captures the drop. */
     { Port_ReproItemGet_Tick(sFrameNum); }
 
+    static bool sPrevPhysicalFf = false;
     {
         /* While either overlay is open, hold all GBA buttons released so
          * the game doesn't observe stray input from key presses we routed
          * to the overlay. The soft-slot configuration overlay piggybacks
          * on this behaviour while it's the active focus. */
         if (Port_DebugMenu_IsOpen() || Port_SoftSlots_ConfigIsOpen() || Port_InGameSettingsModalIsOpen() ||
-            Port_RandoFileMenu_IsOpen()) {
+            Port_RandoFileMenu_IsOpen() || Port_LevelEditor_IsOpen()) {
             *(vu16*)(gIoMem + REG_OFFSET_KEYINPUT) = keyinput;
+            /* The one-frame edge cache must be cleared on this path too: the
+             * event loop keeps stamping edges for keys/pad buttons the overlays
+             * ignore, and a stale flag would fire the frame the overlay closes. */
+            Port_Config_ClearInputEdges();
             Port_SoftSlots_TickPause();
+            Port_Bios_SetFastForward(false);
+            sPrevPhysicalFf = false;
             sFrameNum++;
             return;
+        }
+    }
+
+    /* Fast-forward: support held or toggle mode via remappable PORT_INPUT_FAST_FORWARD. */
+    bool curPhysicalFf = Port_Config_InputPressed(PORT_INPUT_FAST_FORWARD);
+    if (Port_Config_GetFastForwardToggle()) {
+        if (Port_Config_InputEdgePressed(PORT_INPUT_FAST_FORWARD)) {
+            Port_Bios_SetFastForward(!Port_Bios_IsFastForward());
+        }
+    } else {
+        if (curPhysicalFf != sPrevPhysicalFf) {
+            Port_Bios_SetFastForward(curPhysicalFf);
+            sPrevPhysicalFf = curPhysicalFf;
         }
     }
 
@@ -214,19 +273,45 @@ static void Port_UpdateInput(void) {
     }
 }
 
+static bool SDLCALL Port_LifecycleEventWatch(void* userdata, SDL_Event* event) {
+    (void)userdata;
+    if (event->type == SDL_EVENT_WILL_ENTER_BACKGROUND ||
+        event->type == SDL_EVENT_TERMINATING) {
+        extern void Port_QuickSave_RequestLifecycleAutoResume(void);
+        Port_QuickSave_RequestLifecycleAutoResume();
+    }
+    return true;
+}
+
 static void Port_PumpEvents(void) {
+    static bool sEventWatchRegistered = false;
+    if (!sEventWatchRegistered) {
+        sEventWatchRegistered = true;
+        SDL_AddEventWatch(Port_LifecycleEventWatch, NULL);
+    }
+
     SDL_Event e;
     while (SDL_PollEvent(&e)) {
         /* Forward every event to ImGui so its window/keyboard tracking
          * stays in sync. ImGui only consumes input when a widget is
          * actively hovered/focused; game input passes through. */
         Port_ImGui_HandleEvent(&e);
+        if (Port_LevelEditor_IsOpen()) {
+            if (e.type == SDL_EVENT_KEY_DOWN && !e.key.repeat && !Port_ImGui_WantsTextInput()) {
+                if (Port_LevelEditor_HandleKey((int)e.key.key, (int)e.key.scancode)) {
+                    continue;
+                }
+            } else if (e.type == SDL_EVENT_MOUSE_BUTTON_UP ||
+                       (e.type == SDL_EVENT_MOUSE_BUTTON_DOWN && !Port_ImGui_WantsMouse())) {
+                int state = (e.type == SDL_EVENT_MOUSE_BUTTON_DOWN) ? 1 : 0;
+                Port_LevelEditor_HandleMouseButton((int)e.button.button, state, e.button.x, e.button.y);
+                continue;
+            } else if (e.type == SDL_EVENT_MOUSE_MOTION && !Port_ImGui_WantsMouse()) {
+                Port_LevelEditor_HandleMouseMotion(e.motion.x, e.motion.y);
+                continue;
+            }
+        }
         if (e.type == SDL_EVENT_QUIT) {
-            /* Route the close-button (X) / OS-quit signal through the
-             * ImGui modal first so users get a chance to save. The
-             * modal sets Port_ImGui_QuitConfirmed() once the user
-             * picks Save&Quit or Quit-Without-Saving; the per-frame
-             * check below promotes that into gQuitRequested. */
             Port_ImGui_RequestQuitModal();
             continue;
         }
@@ -419,24 +504,14 @@ static void Port_PumpEvents(void) {
             /* When the debug menu is open, route key presses to it and
              * suppress further handling so the game itself doesn't see
              * the keystroke. */
-            {
-                if (Port_DebugMenu_IsOpen() && Port_DebugMenu_HandleKey((int)e.key.key)) {
+            if (e.type == SDL_EVENT_KEY_DOWN) {
+                if (!Port_ImGui_RibbonEnabled() && Port_DebugMenu_IsOpen() && !Port_ImGui_WantsTextInput() && Port_DebugMenu_HandleKey((int)e.key.key)) {
                     continue;
                 }
             }
-            if (e.key.key == SDLK_TAB) {
-                sFastForward = true;
-                continue;
-            }
         }
-        if (e.type == SDL_EVENT_KEY_UP && e.key.key == SDLK_TAB) {
-            sFastForward = false;
-            continue;
-        }
-        /* Fast-forward via keyboard TAB only. The previous RIGHT_TRIGGER
-         * gamepad shortcut conflicted with the default soft-slot R2 binding
-         * (port_softslots.c) — pulling the trigger would simultaneously
-         * fast-forward and fire a soft-slot item. */
+        /* Fast-forward is handled via PORT_INPUT_FAST_FORWARD (default: Tab)
+         * in Port_UpdateInput(), supporting remapping and gamepad bindings. */
 
         /* Gamepad shortcut to open the F8 debug menu: Select + Start.
          * Neither button alone is overloaded (Select opens the map in
@@ -496,6 +571,24 @@ static void Port_PumpEvents(void) {
                             break;
                     }
                 }
+            }
+        }
+
+        if (!Port_ImGui_RibbonEnabled() && Port_DebugMenu_IsOpen() && e.type == SDL_EVENT_GAMEPAD_BUTTON_DOWN) {
+            int key = 0;
+            switch (e.gbutton.button) {
+                case SDL_GAMEPAD_BUTTON_DPAD_UP: key = SDLK_UP; break;
+                case SDL_GAMEPAD_BUTTON_DPAD_DOWN: key = SDLK_DOWN; break;
+                case SDL_GAMEPAD_BUTTON_DPAD_LEFT: key = SDLK_LEFT; break;
+                case SDL_GAMEPAD_BUTTON_DPAD_RIGHT: key = SDLK_RIGHT; break;
+                case SDL_GAMEPAD_BUTTON_SOUTH: key = SDLK_RETURN; break;
+                case SDL_GAMEPAD_BUTTON_EAST: key = SDLK_ESCAPE; break;
+                case SDL_GAMEPAD_BUTTON_LEFT_SHOULDER: key = SDLK_LEFT; break;
+                case SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER: key = SDLK_RIGHT; break;
+                default: break;
+            }
+            if (key != 0 && Port_DebugMenu_HandleKey(key)) {
+                continue;
             }
         }
 
@@ -732,23 +825,28 @@ void VBlankIntrWait(void) {
      * of the busy-wait timer below — so #26 reports of fast-forward and
      * the FPS preset menu having no effect on Windows are actually the
      * display refresh holding us. */
-    {
+    decoupled = Port_Config_GetDecoupleRender() && !Port_PacingForceLegacy();
+
+    if (!Port_PacingForceLegacy()) {
         u32 targetFps = Port_Config_TargetFps();
         /* Honour the user's VSync preference (persisted, #146), but force it
          * off in the cases where VSync would fight the frame-pacing timer and
-         * leave the FPS preset / fast-forward with no effect (#26): fast-
-         * forward, uncapped, or a target above the display refresh. The
-         * ceiling is the REAL refresh, not 60: on a 120 Hz panel a 75/90/120
-         * target fits under VSync fine, and forcing it off there just tears
-         * (visible as horizontal shear while walking with Smooth motion).
-         * Unknown refresh (headless/dummy) keeps the old 60 Hz assumption. */
+         * leave the FPS preset / fast-forward with no effect (#26): coupled
+         * fast-forward, uncapped, or a target above the display refresh.
+         * In decoupled mode, fast-forward presents at 60 Hz while running extra
+         * ticks between presents, so VSync never needs to be toggled off
+         * (avoiding mid-game Vulkan swapchain recreation on Android/desktop). */
         unsigned refresh = Port_PPU_DisplayRefreshRate();
         u32 vsyncCeiling = refresh > 0 ? (u32)refresh : 60;
-        bool mustDisable = sFastForward || targetFps == 0 || targetFps > vsyncCeiling;
+#ifdef __ANDROID__
+        bool mustDisable = false;
+        (void)targetFps;
+        (void)vsyncCeiling;
+#else
+        bool mustDisable = (!decoupled && sFastForward) || targetFps == 0 || targetFps > vsyncCeiling;
+#endif
         Port_PPU_SetVSync(Port_Config_GetVSync() && !mustDisable);
     }
-
-    decoupled = Port_Config_GetDecoupleRender() && !Port_PacingForceLegacy();
 
     if (!decoupled) {
         /* ---- Legacy coupled loop: one present per engine tick, then pace
@@ -812,7 +910,22 @@ void VBlankIntrWait(void) {
                 lastFrameNs = SDL_GetTicksNS();
             }
         } else {
-            lastFrameNs = SDL_GetTicksNS();
+            float speed = Port_Config_GetFastForwardSpeed();
+            if (speed > 1.0f) {
+                u64 base = Port_Config_FrameTimeNs() ? Port_Config_FrameTimeNs() : 16666667ULL;
+                u64 frameTimeNs = (u64)((double)base / speed);
+                u64 deadline = lastFrameNs + frameTimeNs;
+                u64 now = SDL_GetTicksNS();
+                if (now > deadline + frameTimeNs) {
+                    deadline = now;
+                }
+                if (now < deadline) {
+                    SDL_DelayPrecise(deadline - now);
+                }
+                lastFrameNs = deadline;
+            } else {
+                lastFrameNs = SDL_GetTicksNS();
+            }
         }
     } else {
         /* ---- Decoupled pacing: the engine ticks on a fixed grid
@@ -826,7 +939,8 @@ void VBlankIntrWait(void) {
          * an engine tick. ---- */
         u64 entryNs = SDL_GetTicksNS();
         u32 targetFps = Port_Config_TargetFps();
-        bool uncappedTicks = sFastForward || targetFps == 0;
+        float ffSpeed = Port_Config_GetFastForwardSpeed();
+        bool uncappedTicks = (sFastForward && ffSpeed <= 1.0f) || targetFps == 0;
         u64 tickPeriodNs = 0;
         u64 renderPeriodNs;
         u64 now;
@@ -839,12 +953,17 @@ void VBlankIntrWait(void) {
         }
 
         if (!uncappedTicks) {
-            tickPeriodNs = Port_Config_TickTimeNs();
-            /* Practice slow-motion stretches the tick period only; presents
-             * keep their real-time cadence, so slow-mo stays visually fluid. */
-            float sm = Port_Config_GetPracticeSlowmo();
-            if (sm > 0.0f && sm < 0.999f) {
-                tickPeriodNs = (u64)((double)tickPeriodNs / sm);
+            if (sFastForward && ffSpeed > 1.0f) {
+                u64 base = Port_Config_TickTimeNs() ? Port_Config_TickTimeNs() : 16666667ULL;
+                tickPeriodNs = (u64)((double)base / ffSpeed);
+            } else {
+                tickPeriodNs = Port_Config_TickTimeNs();
+                /* Practice slow-motion stretches the tick period only; presents
+                 * keep their real-time cadence, so slow-mo stays visually fluid. */
+                float sm = Port_Config_GetPracticeSlowmo();
+                if (sm > 0.0f && sm < 0.999f) {
+                    tickPeriodNs = (u64)((double)tickPeriodNs / sm);
+                }
             }
         }
         /* Render cadence. During fast-forward / uncapped ticks the preset
@@ -855,7 +974,35 @@ void VBlankIntrWait(void) {
         renderPeriodNs = (targetFps != 0 && !sFastForward) ? Port_Config_FrameTimeNs() : 16666667ULL;
 
         now = entryNs;
-        if (tickPeriodNs == 0) {
+        if (sFastForward) {
+            /* Fast-forward in decoupled mode: present at a steady 60 Hz wall-clock
+             * cadence (scheduled relative to the END of each present so a slow or
+             * VSync-paced present still leaves a full 16.67 ms window for unblocked
+             * catch-up ticks) and pace ticks on their target multiplier grid. */
+            if (now >= sNextPresentNs) {
+                Port_PresentOnce(true);
+                now = SDL_GetTicksNS();
+                sNextPresentNs = now + renderPeriodNs;
+                Port_PumpEvents();
+            } else {
+                port_hdma_vblank_reset();
+            }
+            if (tickPeriodNs == 0) {
+                lastFrameNs = now;
+            } else {
+                u64 deadline = lastFrameNs + tickPeriodNs;
+                /* Allow up to 50 ms (~3 display frames) of catch-up after a blocking
+                 * present before snapping the tick deadline forward. */
+                u64 maxLagNs = tickPeriodNs > 50000000ULL ? tickPeriodNs : 50000000ULL;
+                if (now > deadline + maxLagNs) {
+                    deadline = now;
+                }
+                if (now < deadline) {
+                    SDL_DelayPrecise(deadline - now);
+                }
+                lastFrameNs = deadline;
+            }
+        } else if (tickPeriodNs == 0) {
             /* Uncapped ticks: run the engine flat out; present only when the
              * render grid comes due. "now + period" (not grid + period): with
              * most presents skipped there is no cadence to preserve, and grid
@@ -863,6 +1010,8 @@ void VBlankIntrWait(void) {
             if (now >= sNextPresentNs) {
                 Port_PresentOnce(true);
                 sNextPresentNs = SDL_GetTicksNS() + renderPeriodNs;
+            } else {
+                port_hdma_vblank_reset();
             }
             lastFrameNs = SDL_GetTicksNS();
         } else {
@@ -886,6 +1035,7 @@ void VBlankIntrWait(void) {
                 if (now >= deadline) {
                     if (now - sLastPresentEndNs > 100000000ULL) {
                         Port_PresentOnce(firstOfTick);
+                        firstOfTick = false;
                         sNextPresentNs = SDL_GetTicksNS() + renderPeriodNs;
                     }
                     /* Closed-loop overload guard for the eager-VSync path
@@ -923,10 +1073,14 @@ void VBlankIntrWait(void) {
                         now - sLastPresentEndNs > 100000000ULL) {
                         Port_PresentOnce(firstOfTick);
                         firstOfTick = false;
-                        /* Advance on the grid while keeping up (even
-                         * cadence); snap forward when behind it. */
-                        sNextPresentNs = (sNextPresentNs + renderPeriodNs > now) ? sNextPresentNs + renderPeriodNs
-                                                                                 : now + renderPeriodNs;
+                        {
+                            u64 postPresentNs = SDL_GetTicksNS();
+                            /* Advance on the grid while keeping up (even
+                             * cadence); snap forward when behind it. */
+                            sNextPresentNs = (sNextPresentNs + renderPeriodNs > postPresentNs)
+                                                 ? sNextPresentNs + renderPeriodNs
+                                                 : postPresentNs + renderPeriodNs;
+                        }
                         /* Keep the window/menu live between ticks. */
                         Port_PumpEvents();
                         continue;
@@ -941,6 +1095,9 @@ void VBlankIntrWait(void) {
                     if (until > now)
                         SDL_DelayPrecise(until - now);
                 }
+            }
+            if (firstOfTick) {
+                port_hdma_vblank_reset();
             }
             lastFrameNs = deadline;
         }
@@ -1014,12 +1171,28 @@ void VBlankIntrWait(void) {
         gQuitRequested = true;
 
     if (gQuitRequested) {
+        if (Port_Config_GetAutoSaveOnExit()) {
+            extern int Port_QuickSave_SaveAutoResume(void);
+            Port_QuickSave_SaveAutoResume();
+        }
         exit(0);
     }
 
     Port_PumpEvents();
     Port_UpdateInput();
     Port_TestInputTick(gMain.ticks);
+
+    /* Process pending lifecycle auto-save request at safe frame boundary on the game thread */
+    {
+        extern void Port_QuickSave_CheckLifecycleRequest(void);
+        Port_QuickSave_CheckLifecycleRequest();
+    }
+
+    /* Auto-load state on startup (if enabled and resume save exists). */
+    if (gMain.task == TASK_TITLE || gMain.task == TASK_GAME || gMain.ticks >= 30) {
+        extern void Port_Bios_TryStartupAutoResume(void);
+        Port_Bios_TryStartupAutoResume();
+    }
 
     /* Speedrun practice: advance the IGT frame counter and sample the input
      * display. After Port_UpdateInput() so the sampled mask is this frame's. */
@@ -1041,6 +1214,15 @@ void VBlankIntrWait(void) {
         Port_DiscordRpc_Update(areaName, (int)(gSave.stats.health >> 3), (int)(gSave.stats.maxHealth >> 3),
                                (int)gSave.stats.rupees);
     }
+
+    /* RetroAchievements: evaluate conditions once per emulated frame. This is
+     * the end of the game's frame — the engine has finished mutating its
+     * native globals (same reason the Discord block above can read gSave
+     * directly) and VBlankIntr() below only does the DMA/OAM upload. No-op
+     * unless ra_enabled is set. */
+#ifdef TMC_RA
+    Port_RA_FrameTick();
+#endif
 
     VBlankIntr();
 }
@@ -1073,10 +1255,10 @@ static const u8* Port_RomBufferEnd(const void* src) {
     return Port_LoadedAssetBytesEnd(src);
 }
 
-/* LZ77 decompressor (SWI 0x11/0x12) */
-static void lz77_decomp(const u8* src, u8* dst, size_t dstCap, const u8* srcEnd) {
+/* LZ77 decompressor (SWI 0x11/0x12). Returns bytes written. */
+static u32 lz77_decomp(const u8* src, u8* dst, size_t dstCap, const u8* srcEnd) {
     if (srcEnd && src + 4 > srcEnd)
-        return;
+        return 0;
     u32 header = src[0] | (src[1] << 8) | (src[2] << 16) | (src[3] << 24);
     u32 decompSize = header >> 8;
     src += 4;
@@ -1096,7 +1278,7 @@ static void lz77_decomp(const u8* src, u8* dst, size_t dstCap, const u8* srcEnd)
             if (flags & (1 << i)) {
                 /* Compressed block: 2 bytes → length + distance */
                 if (srcEnd && src + 2 > srcEnd)
-                    return;
+                    return written;
                 u8 b1 = *src++;
                 u8 b2 = *src++;
                 u32 length = ((b1 >> 4) & 0xF) + 3;
@@ -1105,7 +1287,7 @@ static void lz77_decomp(const u8* src, u8* dst, size_t dstCap, const u8* srcEnd)
                 /* A back-reference pointing before the output start is
                  * malformed; refuse rather than wild-read host memory. */
                 if (distance > written)
-                    return;
+                    return written;
                 for (u32 j = 0; j < length && written < decompSize; j++) {
                     dst[written] = dst[written - distance];
                     written++;
@@ -1113,11 +1295,28 @@ static void lz77_decomp(const u8* src, u8* dst, size_t dstCap, const u8* srcEnd)
             } else {
                 /* Uncompressed byte */
                 if (srcEnd && src >= srcEnd)
-                    return;
+                    return written;
                 dst[written++] = *src++;
             }
         }
     }
+    return written;
+}
+
+/* Bounded variant for untrusted on-disk blobs: fails unless the declared size
+ * fits dstCap and the whole stream is present. dst may be a host or GBA address. */
+bool Port_LZ77Decompress(const void* src, size_t srcLen, void* dst, size_t dstCap) {
+    if (srcLen < 4)
+        return false;
+    const u8* s = (const u8*)src;
+    u32 decompSize = (s[0] | (s[1] << 8) | (s[2] << 16) | (s[3] << 24)) >> 8;
+    size_t regionCap = Port_GbaRegionBytesLeft((uintptr_t)dst);
+    if (regionCap && regionCap < dstCap)
+        dstCap = regionCap;
+    if (decompSize > dstCap)
+        return false;
+    u8* resolved = (u8*)port_resolve_addr((uintptr_t)dst);
+    return resolved && lz77_decomp(s, resolved, dstCap, s + srcLen) == decompSize;
 }
 
 void LZ77UnCompVram(const void* src, void* dst) {
@@ -1275,35 +1474,6 @@ void SoftReset(u32 flags) {
     _Exit(0);
 }
 
-/* BgAffineSet (SWI 0x0E) */
-void BgAffineSet(struct BgAffineSrcData* src, struct BgAffineDstData* dst, s32 count) {
-    for (s32 i = 0; i < count; i++) {
-        dst[i].pa = src[i].sx;
-        dst[i].pb = 0;
-        dst[i].pc = 0;
-        dst[i].pd = src[i].sy;
-        dst[i].dx = src[i].texX - src[i].scrX * src[i].sx;
-        dst[i].dy = src[i].texY - src[i].scrY * src[i].sy;
-    }
-}
-
-/* ObjAffineSet (SWI 0x0F)
- *
- * GBA BIOS computes the *inverse* texture-mapping matrix: hardware applies
- * pa/pb/pc/pd to screen-relative coordinates to produce texture coordinates.
- * For a visible scale of sx, the matrix uses 1/sx — so doubling sx halves
- * the sampled-texture step per screen pixel and the sprite *grows*.
- *
- *   pa =  cos(θ) / sx
- *   pb = -sin(θ) / sy
- *   pc =  sin(θ) / sx
- *   pd =  cos(θ) / sy
- *
- * Inputs sx/sy are 8.8 fixed point (0x100 = 1.0). Output pa/pb/pc/pd are
- * also 8.8 fixed point. Each is written as one s16 at `offset`-byte
- * intervals — for OAM (offset=8), that puts the four values in the
- * affineParam field of 4 consecutive OAM entries.
- */
 /* BIOS-accurate sin/cos: the GBA BIOS ObjAffineSet/BgAffineSet quantize the
  * angle to its high 8 bits (256 steps, low byte discarded) and look up a Q1.14
  * (0x4000 = 1.0) sine table, then floor the scaled products with `asr`. The
@@ -1324,6 +1494,62 @@ static void InitBiosSinLut(void) {
     sBiosSinLutInit = 1;
 }
 
+/* BgAffineSet (SWI 0x0E)
+ *
+ * Builds the BG rotation/scaling matrix the hardware applies to screen
+ * coordinates. Only the upper 8 bits of `alpha` are significant (256-step
+ * circle), looked up in the same Q1.14 table as ObjAffineSet:
+ *
+ *   pa =  sx*cos    pb = -sx*sin
+ *   pc =  sy*sin    pd =  sy*cos
+ *   dx = texX - (pa*scrX + pb*scrY)
+ *   dy = texY - (pc*scrX + pd*scrY)
+ *
+ * This previously hardcoded pb = pc = 0 and ignored alpha entirely, which is
+ * only correct for alpha == 0.
+ */
+void BgAffineSet(struct BgAffineSrcData* src, struct BgAffineDstData* dst, s32 count) {
+    if (!sBiosSinLutInit)
+        InitBiosSinLut();
+    for (s32 i = 0; i < count; i++) {
+        u32 idx = ((u16)src[i].alpha >> 8) & 0xFFu;
+        s32 sinv = sBiosSinLut[idx];
+        s32 cosv = sBiosSinLut[(idx + 0x40u) & 0xFFu];
+        s32 pa = (src[i].sx * cosv) >> 14;
+        s32 pb = (-src[i].sx * sinv) >> 14;
+        s32 pc = (src[i].sy * sinv) >> 14;
+        s32 pd = (src[i].sy * cosv) >> 14;
+
+        dst[i].pa = (s16)pa;
+        dst[i].pb = (s16)pb;
+        dst[i].pc = (s16)pc;
+        dst[i].pd = (s16)pd;
+        dst[i].dx = src[i].texX - (pa * src[i].scrX + pb * src[i].scrY);
+        dst[i].dy = src[i].texY - (pc * src[i].scrX + pd * src[i].scrY);
+    }
+}
+
+/* ObjAffineSet (SWI 0x0F)
+ *
+ * Builds the OBJ matrix the hardware applies to screen-relative coordinates to
+ * produce texture coordinates. Because that mapping is screen -> texture, the
+ * matrix is the *inverse* of the visible transform: a larger xScale steps
+ * further through the texture per screen pixel, so the sprite appears SMALLER.
+ * Callers pass the value they want in the matrix, not the visible scale --
+ * e.g. pullableMushroom's stalk lowers xScale from 0x200 to stretch itself.
+ *
+ *   pa =  sx*cos(theta)    pb = -sx*sin(theta)
+ *   pc =  sy*sin(theta)    pd =  sy*cos(theta)
+ *
+ * Inputs sx/sy are 8.8 fixed point (0x100 = 1.0). Output pa/pb/pc/pd are
+ * also 8.8 fixed point. Each is written as one s16 at `offset`-byte
+ * intervals — for OAM (offset=8), that puts the four values in the
+ * affineParam field of 4 consecutive OAM entries.
+ *
+ * NOTE: an earlier version of this comment claimed pa = cos/sx, i.e. the
+ * opposite convention. That contradicted the code below, which is correct --
+ * do not "fix" the code to match a comment again.
+ */
 void ObjAffineSet(struct ObjAffineSrcData* src, void* dst, s32 count, s32 offset) {
     u8* d = (u8*)dst;
     if (!sBiosSinLutInit)

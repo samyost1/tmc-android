@@ -15,6 +15,7 @@
 #include "port_runtime_config.h"
 #include "port_gba_mem.h"
 #include "structures.h"
+#include "main.h"
 #include "tileMap.h"
 #ifndef TMC_N64
 #include <SDL3/SDL.h>
@@ -243,7 +244,6 @@ static void ExtractPage(u32 page) {
         return;
     if (IsPageExtracted(page))
         return;
-    MarkPageExtracted(page);
 
     u32 offset = page << ROM_PAGE_SHIFT;
     u32 size = ROM_PAGE_SIZE;
@@ -263,8 +263,10 @@ static void ExtractPage(u32 page) {
         fseek(chk, 0, SEEK_END);
         long existing = ftell(chk);
         fclose(chk);
-        if ((u32)existing == size)
+        if ((u32)existing == size) {
+            MarkPageExtracted(page);
             return;
+        }
     }
 
     FILE* f = fopen(path, "wb");
@@ -274,6 +276,11 @@ static void ExtractPage(u32 page) {
         if (wrote != size || closed != 0) {
             fprintf(stderr, "WARNING: short write extracting %s (%zu/%u bytes); removing\n", path, wrote, size);
             remove(path);
+        } else {
+            /* Mark only once the page is actually on disk: a read-only install
+             * directory must retry next time instead of counting the page as
+             * extracted for the rest of the session. */
+            MarkPageExtracted(page);
         }
     }
 }
@@ -288,7 +295,7 @@ static void ExtractRegion(u32 rom_offset, u32 size) {
         ExtractPage(p);
 }
 
-/* Load rom_data/*.bin files from a specific directory into gRomData.
+/* Load rom_data pages from a specific directory into gRomData.
  * Returns the number of pages loaded. */
 static int LoadExtractedPagesFrom(const char* dir) {
     int loaded = 0;
@@ -494,11 +501,32 @@ const RomOffsets kRomOffsets_USA = {
     .bgAnimTable = 0x0B755C,
     .localFlagBanks = 0x11E454,
     .townspersonSpriteLoadPtrs = 0x10B6EC,
+    .extraFrameOffsets = 0x9FB770,
+    .collisionMatrix = 0x0B7B74,
+    .collisionShapePtrs = 0x00823C,
+    .tileTypeProperties = 0x000360,
+    .figurines = 0x1281A8,
+    .fuserEnemyData = 0x00232E,
+    .fuserNpcData = 0x002342,
+    .fusionTextPtrs = 0x001A7C,
+    .fuserFusionPtrs = 0x001DCC,
+    .lakeHyliaEnemies = 0x0F3D44,
+    .lakeHyliaCleared = 0x0F3EA4,
+    .lilypadRails = 0x0FED98,
+    .guardPatrolData = 0x10F6BC,
+    .innWestEntities = 0x0D6A74,
+    .innMiddleEntities = 0x0D6B18,
+    .innEastEntities = 0x0D6BB8,
+    .simonEntityLists = 0x0F0CB8,
+    .simonEnemyPatterns = 0x0F0D58,
+    .simonChestPatterns = 0x0F0E08,
+    .gustJarAnimTable = 0x132714,
+    .gustJarHitbox = 0x132B28,
     .gfxGroupsCount = 133,
     .paletteGroupsCount = 208,
     .objPalettesCount = 360,
     .frameObjListsSize = 200045,
-    .fixedTypeGfxCount = 527,
+    .fixedTypeGfxCount = 526,
     .spritePtrsCount = 329,
     .expectedRomSize = 0x1000000,
     .gameCode = "BZME",
@@ -524,7 +552,8 @@ const RomOffsets kRomOffsets_EU = {
     .text094CE = 0x108C22,
     .uiData = 0x0C876C,
     .fadeData = 0x000F9C,
-    .overlaySizeTable = 0x0B25E8, /* EU overlay size table (shifted) */
+    /* 240 bytes, byte-identical to USA. (0x0B25E8 is a function-pointer table.) */
+    .overlaySizeTable = 0x0B2310,
     .mapDataBase = 0x323FEC,
     .areaRoomHeaders = 0x11D95C,
     .areaTileSets = 0x101BC8,
@@ -536,12 +565,35 @@ const RomOffsets kRomOffsets_EU = {
     .bgAnimTable = 0x0B6C84,
     .localFlagBanks = 0x11DB9C,
     .townspersonSpriteLoadPtrs = 0x10AE40,
+    .extraFrameOffsets = 0xB07080,
+    .collisionMatrix = 0x0B729C,
+    .collisionShapePtrs = 0x0082D4,
+    .tileTypeProperties = 0x0003A8,
+    .figurines = 0x1278E0,
+    .fuserEnemyData = 0x0023D6,
+    .fuserNpcData = 0x0023EA,
+    .fusionTextPtrs = 0x001B24,
+    .fuserFusionPtrs = 0x001E74,
+    .lakeHyliaEnemies = 0x0F3368,
+    .lakeHyliaCleared = 0x0F34C8,
+    .lilypadRails = 0x0FE2DC,
+    .guardPatrolData = 0x10EE10,
+    .innWestEntities = 0x0D61D0,
+    .innMiddleEntities = 0x0D6274,
+    .innEastEntities = 0x0D6314,
+    .simonEntityLists = 0x0F02EC,
+    .simonEnemyPatterns = 0x0F038C,
+    .simonChestPatterns = 0x0F043C,
+    .gustJarAnimTable = 0x131D64,
+    .gustJarHitbox = 0x132178,
     .gfxGroupsCount = 133,
     .paletteGroupsCount = 207,
     .objPalettesCount = 360,
-    .frameObjListsSize = 200045,
-    .fixedTypeGfxCount = 527,
-    .spritePtrsCount = 329,
+    /* EU omits USA sprite 288 (SPRITE_OBJECTB4_1) from gSpritePtrs,
+     * gFrameObjLists and gExtraFrameOffsets; fixed gfx omits semantic 519. */
+    .frameObjListsSize = 199561,
+    .fixedTypeGfxCount = 525,
+    .spritePtrsCount = 328,
     .expectedRomSize = 0x1000000,
     .gameCode = "BZMP",
 };
@@ -594,11 +646,32 @@ const RomOffsets kRomOffsets_JP = {
     .bgAnimTable = 0xB72FC,
     .localFlagBanks = 0x11E118,
     .townspersonSpriteLoadPtrs = 0x10B3B0,
+    .extraFrameOffsets = 0x9DD6F0,
+    .collisionMatrix = 0x0B7914,
+    .collisionShapePtrs = 0x00823C,
+    .tileTypeProperties = 0x000360,
+    .figurines = 0x127E6C,
+    .fuserEnemyData = 0x00232E,
+    .fuserNpcData = 0x002342,
+    .fusionTextPtrs = 0x001A7C,
+    .fuserFusionPtrs = 0x001DCC,
+    .lakeHyliaEnemies = 0x0F3A5C,
+    .lakeHyliaCleared = 0x0F3BBC,
+    .lilypadRails = 0x0FEA48,
+    .guardPatrolData = 0x10F380,
+    .innWestEntities = 0x0D6814,
+    .innMiddleEntities = 0x0D68B8,
+    .innEastEntities = 0x0D6958,
+    .simonEntityLists = 0x0F09E0,
+    .simonEnemyPatterns = 0x0F0A80,
+    .simonChestPatterns = 0x0F0B30,
+    .gustJarAnimTable = 0x132340,
+    .gustJarHitbox = 0x132754,
     .gfxGroupsCount = 133,
     .paletteGroupsCount = 208,
     .objPalettesCount = 360,
     .frameObjListsSize = 200045,
-    .fixedTypeGfxCount = 527,
+    .fixedTypeGfxCount = 526,
     .spritePtrsCount = 329,
     .expectedRomSize = 0x1000000,
     .gameCode = "BZMJ",
@@ -610,6 +683,97 @@ const RomOffsets kRomOffsets_JP = {
  * the USA offset before region detection has run. */
 u32 Port_TownspersonSpriteLoadPtrsOffset(void) {
     return gRomOffsets ? gRomOffsets->townspersonSpriteLoadPtrs : 0x10B6ECu;
+}
+
+/* ---- Active-ROM table accessors ----
+ * Every reader bounds-checks against gRomSize and fails closed (NULL / 0)
+ * when the active region has no offset (RomOffsets field == 0). */
+static const u8* RomBytes(u32 table, u32 rel, u32 len) {
+    if (table == 0 || table > gRomSize || rel > gRomSize - table || len > gRomSize - table - rel)
+        return NULL;
+    return &gRomData[table + rel];
+}
+
+enum { FUSER_TABLE_COUNT = 120 }; /* entries in gUnk_08001A7C / gUnk_08001DCC */
+
+/* EU drops USA sprite 288 (SPRITE_OBJECTB4_1), so fat-binary enum values
+ * above it are one too high. 288 itself is returned unchanged; caller decides. */
+u32 Port_RemapSpriteIndex(u32 usaIndex) {
+    return (REGION_IS_EU && usaIndex > 288u) ? usaIndex - 1u : usaIndex;
+}
+
+u32 Port_FrameObjCountForRegion(void) {
+    return REGION_IS_EU ? 511u : 512u;
+}
+
+u32 Port_FrameObjListsSizeForRegion(void) {
+    return gRomOffsets ? gRomOffsets->frameObjListsSize : 200045u;
+}
+
+u32 Port_FixedTypeGfxCountForRegion(void) {
+    return gRomOffsets ? gRomOffsets->fixedTypeGfxCount : 526u;
+}
+
+const u8* Port_ReadActiveRomPtrTable(u32 romOffset, u32 index) {
+    const u8* entry = index < 0x100000u ? RomBytes(romOffset, index * 4u, 4u) : NULL;
+    u32 gba;
+    if (entry == NULL)
+        return NULL;
+    /* Bit 0 is kept: 63 of the 120 EU fuser records live at odd addresses. */
+    gba = Port_ReadU32(entry);
+    return (gba >= 0x08000000u && gba - 0x08000000u < gRomSize) ? &gRomData[gba - 0x08000000u] : NULL;
+}
+
+const u8* Port_GetCollisionShapeData(u32 index) {
+    if (gRomOffsets == NULL || index >= 40u)
+        return NULL;
+    return Port_ReadActiveRomPtrTable(gRomOffsets->collisionShapePtrs, index);
+}
+
+u32 Port_GetTileTypeProperty(u32 tileType) {
+    const u8* p = (gRomOffsets && tileType < 0x4000u) ? RomBytes(gRomOffsets->tileTypeProperties, tileType * 2u, 2u)
+                                                       : NULL;
+    return p ? Port_ReadU16(p) : 0u;
+}
+
+const u16* Port_GetFusionTextData(u32 fuserId) {
+    if (gRomOffsets == NULL || fuserId >= FUSER_TABLE_COUNT)
+        return NULL;
+    return (const u16*)Port_ReadActiveRomPtrTable(gRomOffsets->fusionTextPtrs, fuserId);
+}
+
+const u8* Port_GetFuserFusionData(u32 fuserId) {
+    if (gRomOffsets == NULL || fuserId >= FUSER_TABLE_COUNT)
+        return NULL;
+    return Port_ReadActiveRomPtrTable(gRomOffsets->fuserFusionPtrs, fuserId);
+}
+
+/* GetFuserData's 6-byte {id, type, type2, fuserId, textId(u16)} key scan over
+ * the active ROM's enemy/NPC table. Packed result: textId << 32 | fuserId. */
+u64 Port_FindEntityFuserData(u32 isNpc, u8 id, u8 type, u8 type2) {
+    static const u32 masks[4] = { 0x00FFFFFFu, 0x00FFFF00u, 0x00FF00FFu, 0x00FF0000u };
+    const u32 key = ((u32)id << 16) | ((u32)type << 8) | type2;
+    const u8* table;
+    u32 record;
+    if (gRomOffsets == NULL)
+        return 0;
+    table = RomBytes(isNpc ? gRomOffsets->fuserNpcData : gRomOffsets->fuserEnemyData, 0u, 6u * 129u);
+    if (table == NULL)
+        return 0;
+    /* Record 0 is a sentinel; retail tables terminate well inside 128 records. */
+    for (record = 1; record <= 128u; record++) {
+        const u8* e = table + record * 6u;
+        u32 entryKey = ((u32)e[0] << 16) | ((u32)e[1] << 8) | e[2];
+        u32 mask = masks[((e[1] == 0xFF) ? 2u : 0u) | ((e[2] == 0xFF) ? 1u : 0u)];
+        if (e[0] == 0)
+            return 0;
+        if ((key & mask) != (entryKey & mask))
+            continue;
+        if (e[3] >= FUSER_TABLE_COUNT)
+            return 0;
+        return ((u64)((u32)e[4] | ((u32)e[5] << 8)) << 32) | e[3];
+    }
+    return 0;
 }
 
 RomRegion Port_DetectRomRegion(const u8* romData, u32 romSize) {
@@ -741,16 +905,6 @@ extern const u32 kUnk09230Offsets[];
 extern const u32 kUnk09248Offsets[];
 extern const u32 kUnk092ACOffsets[];
 
-/* Helper: resolve an offset from a compile-time offset table.
- * 0xFFFFFFFF means NULL. */
-static inline void* ResolveTableOffset(u32 offset) {
-    if (offset == 0xFFFFFFFF || !gRomData)
-        return NULL;
-    if (offset < gRomSize)
-        return &gRomData[offset];
-    return NULL;
-}
-
 /* Area / room data tables (port_linked_stubs.c) */
 extern RoomHeader* gAreaRoomHeaders[];
 extern void* gAreaRoomMaps[];
@@ -827,12 +981,22 @@ static void ResolveSubTable(void* romBase, void** dest, u32 count) {
 static u32 ScanSubArrayCount(const void* base) {
     const u8* bytes = (const u8*)base;
     u32 count = 0;
+    u32 limit = MAX_ROOMS;
 
     if (bytes == NULL) {
         return 0;
     }
 
-    for (u32 i = 0; i < MAX_ROOMS; i++) {
+    /* The base comes from a packed pointer that was only bounds-checked on its
+     * first byte; a base landing in the final MAX_ROOMS*4 bytes of the ROM
+     * would otherwise walk past the allocation. */
+    if (gRomData != NULL && bytes >= gRomData && bytes < gRomData + gRomSize) {
+        u32 avail = (u32)(gRomData + gRomSize - bytes) / 4;
+        if (avail < limit)
+            limit = avail;
+    }
+
+    for (u32 i = 0; i < limit; i++) {
         u32 value = RomLE32(bytes + i * 4);
         if (value == 0 || (value >= 0x08000000u && value < 0x08000000u + gRomSize)) {
             count = i + 1;
@@ -1209,84 +1373,6 @@ static FILE* TryOpenRom(const char** paths, int count, char* foundPath, int foun
     return NULL;
 }
 
-/*
- * LoadRomGaps — load rom_gaps.bin to fill assembled data regions
- * (pointer tables, GfxItem arrays, etc.) that are NOT in asset files.
- *
- * File format: "GAPD" magic, u32 chunk_count,
- *   then for each chunk: u32 offset, u32 size, u8[size] data.
- *
- * Generated by tools/generate_rom_gaps.py from baserom.gba.
- */
-static int LoadRomGaps(void) {
-    const char* candidates[] = {
-        "rom_gaps.bin",       "build/USA/rom_gaps.bin",       "build/pc/rom_gaps.bin",
-        "../../rom_gaps.bin", "../../build/USA/rom_gaps.bin", "../rom_gaps.bin",
-    };
-    FILE* f = NULL;
-    const char* usedPath = NULL;
-    for (int i = 0; i < (int)(sizeof(candidates) / sizeof(candidates[0])); i++) {
-        f = fopen(candidates[i], "rb");
-        if (f) {
-            usedPath = candidates[i];
-            break;
-        }
-    }
-    if (!f)
-        return 0;
-
-    /* Allocate ROM buffer if not already done */
-    if (!gRomData) {
-        gRomSize = ROM_EXPECTED_SIZE;
-        gRomData = (u8*)calloc(1, gRomSize);
-        if (!gRomData) {
-            fclose(f);
-            return 0;
-        }
-    }
-
-    /* Read and verify header */
-    char magic[4];
-    u32 chunkCount;
-    if (fread(magic, 1, 4, f) != 4 || memcmp(magic, "GAPD", 4) != 0) {
-        fprintf(stderr, "WARNING: %s has invalid magic\n", usedPath);
-        fclose(f);
-        return 0;
-    }
-    if (fread(&chunkCount, 4, 1, f) != 1) {
-        fprintf(stderr, "WARNING: %s truncated (missing chunk count); skipping gap data\n", usedPath);
-        fclose(f);
-        return 0;
-    }
-
-    /* Read chunks and patch gRomData */
-    u32 loaded = 0;
-    u32 totalBytes = 0;
-    for (u32 i = 0; i < chunkCount; i++) {
-        u32 offset, size;
-        if (fread(&offset, 4, 1, f) != 1 || fread(&size, 4, 1, f) != 1) {
-            fprintf(stderr, "WARNING: %s truncated at chunk %u/%u header; aborting gap load\n", usedPath, i,
-                    chunkCount);
-            break;
-        }
-        if (offset + size > gRomSize) {
-            fseek(f, (long)size, SEEK_CUR);
-            continue;
-        }
-        if (fread(&gRomData[offset], 1, size, f) != size) {
-            fprintf(stderr, "WARNING: %s truncated in chunk %u/%u (offset 0x%X, %u bytes); aborting gap load\n",
-                    usedPath, i, chunkCount, offset, size);
-            break;
-        }
-        loaded++;
-        totalBytes += size;
-    }
-
-    fclose(f);
-    fprintf(stderr, "Gap data loaded: %u chunks (%u KB) from %s\n", loaded, totalBytes / 1024, usedPath);
-    return (int)loaded;
-}
-
 void Port_LoadRom(const char* path) {
     sLoadedRomPath[0] = '\0';
 #ifndef TMC_N64
@@ -1372,24 +1458,26 @@ void Port_LoadRom(const char* path) {
                     Port_FatalRomError("Minish Cap PC Port - ROM allocation failed", msg);
                 }
             }
-            if (fileSize <= gRomSize) {
-                const size_t got = fread(gRomData, 1, fileSize, f);
-                if (got == (size_t)fileSize) {
-                    gRomSize = fileSize;
-                    romLoaded = 1;
-                } else {
-                    fprintf(stderr, "ERROR: short read on ROM %s (%zu/%u bytes); ignoring ROM file\n", usedPath, got,
-                            fileSize);
-                    if (allocatedHere) {
-                        free(gRomData);
-                        gRomData = NULL;
-                        gRomSize = 0;
-                    }
-                }
-            } else {
-                /* Oversized file with a pre-filled buffer: keep prior
-                 * behaviour (treated as loaded without re-reading). */
+            /* The extracted-pages pass may already have sized the buffer at
+             * the full ROM length; a longer file (padded dump) is read up to
+             * the buffer rather than being called "loaded" without a read. */
+            if (fileSize > gRomSize) {
+                fprintf(stderr, "WARNING: ROM %s is %u bytes; reading only the first %u\n", usedPath, fileSize,
+                        gRomSize);
+                fileSize = gRomSize;
+            }
+            const size_t got = fread(gRomData, 1, fileSize, f);
+            if (got == (size_t)fileSize) {
+                gRomSize = fileSize;
                 romLoaded = 1;
+            } else {
+                fprintf(stderr, "ERROR: short read on ROM %s (%zu/%u bytes); ignoring ROM file\n", usedPath, got,
+                        fileSize);
+                if (allocatedHere) {
+                    free(gRomData);
+                    gRomData = NULL;
+                    gRomSize = 0;
+                }
             }
             fclose(f);
             if (romLoaded) {
@@ -1399,32 +1487,11 @@ void Port_LoadRom(const char* path) {
         }
     }
 
-    /* ---- Step 3: load gap data (assembled tables not in assets) ---- */
-    /*
-     * Assets cover .incbin binary blobs. If a ROM was loaded, the .incbin
-     * regions already have correct data and this is a harmless overwrite.
-     * If no ROM was loaded, assets fill those regions from build output.
-     * NOTE: assembled pointer tables (gGfxGroups, gPaletteGroups, area
-     * tables, etc.) are NOT in assets — they require a ROM file.
-     */
-
-    /*
-     * rom_gaps.bin contains ROM data from regions NOT covered by .incbin
-     * asset files: pointer tables, GfxItem arrays, PaletteGroup structs,
-     * area sub-tables, etc. Generated once from baserom.gba by
-     * tools/generate_rom_gaps.py.
-     */
-    int gapsLoaded = 0;
-    if (!romLoaded) {
-        gapsLoaded = LoadRomGaps();
-    }
-
     /* ---- Check that we have some data ---- */
     /* A full ROM file is required for normal play; extracted pages
-     * (rom_data/) and rom_gaps.bin are only useful as supplemental
-     * sources alongside a real ROM. Surface every "no real ROM" case
-     * as a fatal dialog rather than letting the engine boot into a
-     * black screen. */
+     * (rom_data/) are only useful as a supplemental source alongside a
+     * real ROM. Surface every "no real ROM" case as a fatal dialog
+     * rather than letting the engine boot into a black screen. */
     if (!romLoaded) {
         Port_FatalRomError("Minish Cap PC Port - ROM not found",
                            "Could not load baserom.gba.\n\n"
@@ -1446,8 +1513,17 @@ void Port_LoadRom(const char* path) {
 #endif
 
     /* ---- Step 3: auto-detect ROM region ---- */
-    Port_DetectRomRegion(gRomData, gRomSize);
+    RomRegion region = Port_DetectRomRegion(gRomData, gRomSize);
     const RomOffsets* R = gRomOffsets;
+    if (region == ROM_REGION_UNKNOWN || R == NULL) {
+        char msg[256];
+        snprintf(msg, sizeof(msg),
+                 "The ROM file is only %u bytes and has no readable header.\n\n"
+                 "This is usually a Git-LFS pointer stub or a failed download.\n"
+                 "Replace it with a complete Minish Cap ROM.",
+                 gRomSize);
+        Port_FatalRomError("Minish Cap PC Port - ROM not recognised", msg);
+    }
 
     if (gRomSize < R->expectedRomSize) {
         char msg[256];
@@ -1508,23 +1584,17 @@ void Port_LoadRom(const char* path) {
         fprintf(stderr, "gPalette_549 loaded (%zu bytes from gGlobalGfxAndPalettes + 0x44A0).\n", sizeof(gPalette_549));
     }
 
-    /* gLilypadRails — USA: a 3-entry .4byte pointer table at 0x080FED98 (rail
-     * command lists for type2>=0x80 lilypads and kinstone-fused lilypad rails,
-     * data/const/game_2.s). The port stub (port_linked_stubs.c) is a zero-init
-     * native array, so without this the rails resolve to NULL and those lilypads
-     * never move along their path. Resolve the 3 ROM pointers into it (same
-     * approach as gPalette_549/gFigurines). USA-only absolute address; EU is
-     * left as the NULL stub (status quo — no regression). */
-    if (gRomRegion == ROM_REGION_USA) {
+    /* gLilypadRails — 3-entry packed pointer table (rail command lists for
+     * type2>=0x80 lilypads and kinstone-fused lilypad rails). The port stub
+     * (port_linked_stubs.c) is a zero-init native array, so without this the
+     * rails resolve to NULL and those lilypads never move along their path. */
+    {
         extern void* gLilypadRails[];
-        u8* base = (u8*)Port_ResolveRomData(0x080FED98);
-        if (base != NULL) {
-            int i;
-            for (i = 0; i < 3; i++) {
-                gLilypadRails[i] = Port_UnpackRomDataPtr(base, (u32)i);
-            }
-            fprintf(stderr, "gLilypadRails loaded (3 rail pointers from 0x080FED98).\n");
+        int i;
+        for (i = 0; i < 3; i++) {
+            gLilypadRails[i] = (void*)Port_ReadActiveRomPtrTable(R->lilypadRails, (u32)i);
         }
+        fprintf(stderr, "gLilypadRails loaded (3 rail pointers from ROM 0x%X).\n", R->lilypadRails);
     }
 
     /* Runtime-rendered sprite data must come from the active ROM.
@@ -1539,12 +1609,18 @@ void Port_LoadRom(const char* path) {
         fprintf(stderr, "WARNING: gFrameObjLists ROM range invalid; using compile-time fallback.\n");
     }
 
-    /* gExtraFrameOffsets — self-relative offset table multi-part sprite positioning */
+    /* gExtraFrameOffsets — self-relative offset table for multi-part sprite
+     * positioning. Differs per region (EU: 1169 bytes, JP: 72 bytes vs USA). */
     {
         extern const u8 kExtraFrameOffsetsData[4352];
         extern u8 gExtraFrameOffsets[4352];
-        memcpy(gExtraFrameOffsets, kExtraFrameOffsetsData, 4352);
-        fprintf(stderr, "gExtraFrameOffsets loaded (4352 bytes from compile-time table).\n");
+        if (R->extraFrameOffsets != 0 && R->extraFrameOffsets + 4352 <= gRomSize) {
+            memcpy(gExtraFrameOffsets, &gRomData[R->extraFrameOffsets], 4352);
+            fprintf(stderr, "gExtraFrameOffsets loaded (4352 bytes from ROM 0x%X).\n", R->extraFrameOffsets);
+        } else {
+            memcpy(gExtraFrameOffsets, kExtraFrameOffsetsData, 4352);
+            fprintf(stderr, "WARNING: gExtraFrameOffsets unavailable; using compile-time fallback.\n");
+        }
     }
 
     /* OBJ palette offset table — now compile-time const src/data/objPalettes.c */
@@ -1596,8 +1672,9 @@ void Port_LoadRom(const char* path) {
         memset(gMoreSpritePtrs, 0, sizeof(gMoreSpritePtrs));
         memset(gSpriteAnimations_322, 0, sizeof(gSpriteAnimations_322));
 
-        if (R->spritePtrsCount > 322) {
-            const SpritePtr* sp322 = &gSpritePtrs[322];
+        const u32 sp322Index = Port_RemapSpriteIndex(322u); /* EU-native 321 */
+        if (R->spritePtrsCount > sp322Index) {
+            const SpritePtr* sp322 = &gSpritePtrs[sp322Index];
             gMoreSpritePtrs[0] = (u16*)sp322->animations;
             gMoreSpritePtrs[1] = (u16*)sp322->frames;
             gMoreSpritePtrs[2] = (u16*)sp322->ptr;
@@ -1617,7 +1694,8 @@ void Port_LoadRom(const char* path) {
                     }
                     resolvedCount++;
                 }
-                fprintf(stderr, "gSpriteAnimations_322 resolved (%u entries via SpritePtr[322]).\n", resolvedCount);
+                fprintf(stderr, "gSpriteAnimations_322 resolved (%u entries via SpritePtr[%u]).\n", resolvedCount,
+                        sp322Index);
             }
         }
     }
@@ -1649,13 +1727,13 @@ void Port_LoadRom(const char* path) {
     }
 
     /* gTranslations — resolved from active ROM */
-    memset(gTranslations, 0, sizeof(void*) * 7);
+    memset(gTranslations, 0, sizeof(void*) * LANGUAGE_SLOT_COUNT);
     if (REGION_IS_JP) {
         gTranslations[0] = Port_UnpackRomDataPtr(&gRomData[R->translations], 0);
     } else if (REGION_IS_USA) {
         gTranslations[1] = Port_UnpackRomDataPtr(&gRomData[R->translations], 1);
     } else if (REGION_IS_EU) {
-        for (int i = 1; i <= 5; i++) {
+        for (int i = 1; i <= EU_LANGUAGE_LAST_SLOT; i++) { /* slot 6 = Italian */
             gTranslations[i] = Port_UnpackRomDataPtr(&gRomData[R->translations], i);
         }
     }
@@ -1692,20 +1770,20 @@ void Port_LoadRom(const char* path) {
         Port_LoadOverlayDataFromConst(kOverlaySizeData, 240);
     }
 
-    /* gMapData — copy map data blob from ROM into the PC buffer.
-     * On GBA, gMapData is a ROM label; on PC it's a large u8 array.
-     * Source files compute &gMapData + offset, so we fill the buffer. */
+    /* gMapData — map data blob. On GBA a ROM label; on PC a pointer into the
+     * loaded ROM (no 14 MB copy). The expectedRomSize check above already
+     * guarantees mapDataBase < gRomSize for every known offset table. */
     {
-        extern u8 gMapData[];
         u32 mapDataSize = gRomSize - R->mapDataBase;
-        if (mapDataSize > 0xE00000u)
-            mapDataSize = 0xE00000u;
 #ifdef TMC_N64
         if (mapDataSize > 0x100000u)
             mapDataSize = 0x100000u; /* gMapData is a 1 MB placeholder on N64 */
-#endif
         memcpy(gMapData, &gRomData[R->mapDataBase], mapDataSize);
         fprintf(stderr, "gMapData loaded (%u bytes from ROM offset 0x%X).\n", mapDataSize, R->mapDataBase);
+#else
+        gMapData = &gRomData[R->mapDataBase];
+        fprintf(stderr, "gMapData mapped (%u bytes at ROM offset 0x%X).\n", mapDataSize, R->mapDataBase);
+#endif
     }
 
     /* ---- Area / room data tables (0x90 entries each) ---- */
@@ -1798,21 +1876,20 @@ void Port_LoadRom(const char* path) {
 
     /* The extracted assets/ cache is built from the USA ROM (asset baseline is
      * USA). These overrides reseed gTranslations / gSpritePtrs / area tables from
-     * that cache, so applying them against a JP ROM clobbers the region-correct
-     * data resolved above with USA content (JP gTranslations[0] gets NULLed and
-     * English supplied in slot 1 → JP text renders as English, and JP font/area
-     * tables go garbage → file-select font crash). Skip the override for a JP ROM;
-     * Asset overriding for JP ROMs is now gated inside the loader functions. */
-    if (Port_LoadTextsFromAssets()) {
-        fprintf(stderr, "gTranslations overridden from extracted assets.\n");
-    }
+     * that cache, so applying them against non-USA ROMs clobbers the region-correct
+     * data resolved above with USA content. Only override for USA. */
+    if (gRomRegion == ROM_REGION_USA) {
+        if (Port_LoadTextsFromAssets()) {
+            fprintf(stderr, "gTranslations overridden from extracted assets.\n");
+        }
 
-    if (Port_LoadSpritePtrsFromAssets()) {
-        fprintf(stderr, "gSpritePtrs overridden from extracted assets.\n");
-    }
+        if (Port_LoadSpritePtrsFromAssets()) {
+            fprintf(stderr, "gSpritePtrs overridden from extracted assets.\n");
+        }
 
-    if (Port_LoadAreaTablesFromAssets()) {
-        fprintf(stderr, "Area data tables overridden from extracted assets.\n");
+        if (Port_LoadAreaTablesFromAssets()) {
+            fprintf(stderr, "Area data tables overridden from extracted assets.\n");
+        }
     }
 
     fprintf(stderr, "ROM symbols resolved (%s: gGlobalGfxAndPalettes, gFrameObjLists).\n",
@@ -1917,15 +1994,17 @@ void Port_ApplyLanguage(void) {
     if (lang < 0) {
         sLastAppliedPref = lang;
         const int current = gSaveHeader->language;
-        if (current >= 0 && current < 6 /* NUM_LANGUAGES */ && gTranslations[current] != NULL) {
+        if (current >= 0 && current < (int)RegionLanguageSlotCount() && gTranslations[current] != NULL &&
+            RegionSaveLanguageValid((u32)current)) {
             return;
         }
-        lang = REGION_IS_JP ? 0 /* LANGUAGE_JP */ : 1 /* LANGUAGE_EN */;
+        lang = RegionDefaultLanguage();
     } else {
         sLastAppliedPref = lang;
+        lang = RegionPreferredLanguageToSaveSlot(lang);
     }
 
-    if (lang >= 0 && lang < 6 /* NUM_LANGUAGES */ && gTranslations[lang] != NULL) {
+    if (lang >= 0 && lang < (int)RegionLanguageSlotCount() && gTranslations[lang] != NULL) {
         gSaveHeader->language = (u8)lang;
     }
 }

@@ -20,6 +20,9 @@ extern "C" {
  * May override KEYINPUT bits for R / B / direction during the sequence. */
 void Port_RollAttackMacro_Tick(uint16_t* keyinput);
 
+/* Cancel any running macro sequence and clear sword override immediately. */
+void Port_RollAttackMacro_Reset(void);
+
 /* True on frames where the macro is injecting a sword press through B. */
 bool Port_RollAttackMacro_IsBHeld(void);
 

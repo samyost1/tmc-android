@@ -8,6 +8,32 @@
 #if defined(PC_PORT) && defined(MULTI_REGION)
 #include "region.h"
 
+/*
+ * HAND-EDITED after generation (tools/gen_offset_remap.py is not in-tree, so
+ * there is nothing to regenerate from — keep this block if the tables are ever
+ * replaced).
+ *
+ * The tables below are keyed by USA offset, so they only translate correctly
+ * when the offsets handed to them were baked from a USA baseline. `game_version`
+ * selects that baseline (build/<ver>/assets/{gfx,map}_offsets.h), and an EU or JP
+ * build bakes offsets that are ALREADY native to the loaded ROM. Translating
+ * those a second time silently lands them on a neighbour's row: 414 of the 1826
+ * gfx entries have an EU value that is itself another entry's USA key, e.g.
+ * offset_gPalette_3390 compiles to 0x1A780 on an EU build and { 0x1A780, 0x1A740 }
+ * then shifts it two palettes early.
+ *
+ * So the remap is a no-op whenever the build baseline already matches the ROM.
+ * USA-baseline builds are unaffected (baseline == TMC_REGION_USA reproduces the
+ * old `gActiveRegion == TMC_REGION_USA` early-out exactly).
+ */
+#if defined(EU)
+#define PORT_OFFSET_BASELINE_REGION TMC_REGION_EU
+#elif defined(JP)
+#define PORT_OFFSET_BASELINE_REGION TMC_REGION_JP
+#else
+#define PORT_OFFSET_BASELINE_REGION TMC_REGION_USA
+#endif
+
 /* map-blob (gMapData) rows that diverge: usa, eu, jp */
 static const u32 sMapRemap[][3] = {
     { 0x21990, 0x2198C, 0x21990 },
@@ -3673,8 +3699,8 @@ static int FindRow(const u32* keys, int stride, int count, u32 usa) {
 
 u32 Port_RemapMapOffset(u32 usa_offset) {
     int row;
-    if (gActiveRegion == TMC_REGION_USA)
-        return usa_offset;
+    if (gActiveRegion == PORT_OFFSET_BASELINE_REGION)
+        return usa_offset; /* offsets already native to the loaded ROM */
     row = FindRow(&sMapRemap[0][0], 3, (int)(sizeof(sMapRemap) / sizeof(sMapRemap[0])), usa_offset);
     if (row < 0)
         return usa_offset; /* non-divergent or ROM-native (already correct) */
@@ -3685,6 +3711,8 @@ u32 Port_RemapGfxOffset(u32 usa_offset) {
     int row;
     if (gActiveRegion != TMC_REGION_EU)
         return usa_offset; /* JP gfx blob layout == USA */
+    if (PORT_OFFSET_BASELINE_REGION == TMC_REGION_EU)
+        return usa_offset; /* EU-baseline build: offsets are already EU-native */
     row = FindRow(&sGfxRemapEU[0][0], 2, (int)(sizeof(sGfxRemapEU) / sizeof(sGfxRemapEU[0])), usa_offset);
     if (row < 0)
         return usa_offset;

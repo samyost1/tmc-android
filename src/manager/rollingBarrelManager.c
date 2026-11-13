@@ -24,20 +24,6 @@ extern u8 gUpdateVisibleTiles;
 extern u32 gUsedPalettes;
 
 void RollingBarrelManager_OnEnterRoom(void);
-#ifdef PC_PORT
-extern void DisableVBlankDMA(void);
-static void RollingBarrelManager_OnExitRoom(void* this) {
-    /* Pairs with the per-frame SetVBlankDMA at line ~47 that writes
-     * BG2PA per-HBlank.  The manager registers no exit handler in
-     * vanilla, so on leaving Deepwood Shrine's rolling-barrel room
-     * the HDMA keeps firing into BG2PA in the next room — visible
-     * BG2 affine glitch when entering subsequent areas without a
-     * pause-menu open in between (which would mask the issue by
-     * overwriting the DMA src/dest).  Same fix class as #103. */
-    (void)this;
-    DisableVBlankDMA();
-}
-#endif
 void sub_08058BC8(RollingBarrelManager*);
 void sub_08058CB0(RollingBarrelManager*);
 void sub_08058CFC(void);
@@ -67,11 +53,7 @@ void RollingBarrelManager_Init(RollingBarrelManager* this) {
     this->unk_28 = 0x1234;
     super->timer = CheckLocalFlagsB(0x15, 0x2) != 0;
     sub_08058CB0(this);
-#ifdef PC_PORT
-    RegisterTransitionHandler(this, RollingBarrelManager_OnEnterRoom, RollingBarrelManager_OnExitRoom);
-#else
     RegisterTransitionHandler(this, RollingBarrelManager_OnEnterRoom, NULL);
-#endif
 }
 
 void RollingBarrelManager_Action1(RollingBarrelManager* this) {
@@ -250,7 +232,7 @@ void sub_08058BC8(RollingBarrelManager* this) {
     } while (++tmp3 < 0xA0u);
 #ifdef PC_PORT
     /* On GBA, gUnk_02017BA0 lives at gUnk_02017AA0 + 0x100 in EWRAM
-     * (documented in port_linked_stubs.c:70) — i.e. 0x10 BgAffineDstData
+     * (see the note in port_linked_stubs.c) — i.e. 0x10 BgAffineDstData
      * entries forward in the SAME buffer that the write loop above just
      * filled. On PC the two arrays are separate host allocations, so
      * gUnk_02017BA0 was never written and reading from it gives zeros,

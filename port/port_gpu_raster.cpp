@@ -371,7 +371,9 @@ static bool record_frame(PortGpuRaster* r, const PortGpuRasterFrame* f, SDL_GPUC
     p.wsmsg[2] = f->ws_msg_x1;
     p.wsmsg[3] = (f->ws_msg_y0 << 16) | (f->ws_msg_y1 & 0xFFFF);
     for (int i = 0; i < 4; ++i) {
-        p.wsbase[i] = (f->ws_shadow && f->ws_shadow_base_tile[i] >= 0) ? f->ws_shadow_base_tile[i] : -1;
+        p.wsbase[i] = (f->ws_shadow && (f->ws_shadow_base_tile[i] >= 0 || f->ws_shadow_base_tile[i] < -1))
+                          ? f->ws_shadow_base_tile[i]
+                          : -1;
     }
 
     SDL_GPUColorTargetInfo ct;

@@ -152,6 +152,10 @@ static void FinishMacro(void) {
     sPulseFrames = 0;
 }
 
+void Port_RollAttackMacro_Reset(void) {
+    FinishMacro();
+}
+
 static void InjectBPress(uint16_t* keyinput) {
     *keyinput &= ~B_BUTTON;
     sSwordOverride = true;

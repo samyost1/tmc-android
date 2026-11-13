@@ -5,156 +5,137 @@
 extern "C" { typedef void (*PortStepCycle)(int); }
 typedef const char* (*PortStepValue)(char* buf, size_t cap);
 
-/* One Display-tab settings row: label, then a <value> stepper flanked by
- * < / > buttons. getValue() is read *between* the buttons so a click's new
- * value shows the same frame, matching the hand-written rows. */
+/* Aligned stepper row: label on column 0, and [<] [ centered value ] [>] on column 1. */
 static void StepperRow(const char* label, const char* id,
-                       PortStepValue getValue, PortStepCycle onCycle) {
-    char tag[24];
+                       PortStepValue getValue, PortStepCycle onCycle,
+                       const char* subtitle = nullptr) {
+    char tag[32];
+    const float em = ImGui::GetFontSize();
+    const float btnW = em * 1.85f;
+    const float valW = em * 8.5f;
+
     ImGui::TableNextRow();
-    ImGui::TableSetColumnIndex(0); ImGui::Text("%s", label);
+    ImGui::TableSetColumnIndex(0);
+    ImGui::AlignTextToFramePadding();
+    ImGui::TextUnformatted(label);
+    if (subtitle && subtitle[0]) {
+        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.55f, 0.62f, 0.56f, 1.0f));
+        ImGui::TextWrapped("%s", subtitle);
+        ImGui::PopStyleColor();
+    }
+
     ImGui::TableSetColumnIndex(1);
     std::snprintf(tag, sizeof(tag), "<##%s", id);
-    if (ImGui::Button(tag)) onCycle(-1);
-    ImGui::SameLine();
-    char buf[24];
-    ImGui::Text("%s", getValue(buf, sizeof(buf)));
-    ImGui::SameLine();
+    if (ImGui::Button(tag, ImVec2(btnW, 0))) onCycle(-1);
+    ImGui::SameLine(0.0f, 8.0f);
+
+    char buf[32];
+    const char* valStr = getValue(buf, sizeof(buf));
+    const float curX = ImGui::GetCursorPosX();
+    const float textW = ImGui::CalcTextSize(valStr).x;
+    const float offset = (valW > textW) ? (valW - textW) * 0.5f : 0.0f;
+    ImGui::SetCursorPosX(curX + offset);
+    ImGui::AlignTextToFramePadding();
+    ImGui::TextColored(ImVec4(0.85f, 0.96f, 0.87f, 1.0f), "%s", valStr);
+    ImGui::SameLine(0.0f, 0.0f);
+    ImGui::SetCursorPosX(curX + valW + 8.0f);
+
     std::snprintf(tag, sizeof(tag), ">##%s", id);
-    if (ImGui::Button(tag)) onCycle(+1);
+    if (ImGui::Button(tag, ImVec2(btnW, 0))) onCycle(+1);
+}
+
+static void ToggleRow(const char* label, const char* id, bool* value, const char* subtitle = nullptr) {
+    ImGui::TableNextRow();
+    ImGui::TableSetColumnIndex(0);
+    ImGui::AlignTextToFramePadding();
+    ImGui::TextUnformatted(label);
+    if (subtitle && subtitle[0]) {
+        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.55f, 0.62f, 0.56f, 1.0f));
+        ImGui::TextWrapped("%s", subtitle);
+        ImGui::PopStyleColor();
+    }
+    ImGui::TableSetColumnIndex(1);
+    return;
 }
 
 static void DrawRibbonDisplayTab(void) {
     const bool gpuActive = Port_GPU_IsActive();
+    const float em = ImGui::GetFontSize();
+    const float labelColW = em * 13.5f;
+    const ImGuiTableFlags tblFlags = ImGuiTableFlags_SizingFixedFit | ImGuiTableFlags_RowBg | ImGuiTableFlags_PadOuterX;
 
-    if (ImGui::BeginTable("##display_settings_table", 2, ImGuiTableFlags_SizingFixedFit)) {
-        ImGui::TableSetupColumn("Label", ImGuiTableColumnFlags_WidthFixed, 150.0f);
+    ImGui::SeparatorText(UiTr("Screen & Aspect Ratio", "Schermo & Proporzioni"));
+    if (ImGui::BeginTable("##display_screen_table", 2, tblFlags)) {
+        ImGui::TableSetupColumn("Label", ImGuiTableColumnFlags_WidthFixed, labelColW);
         ImGui::TableSetupColumn("Value", ImGuiTableColumnFlags_WidthStretch);
 
-        // Window scale - value captured before the buttons (read-before).
-        ImGui::TableNextRow();
-        ImGui::TableSetColumnIndex(0); ImGui::Text("Window scale");
-        ImGui::TableSetColumnIndex(1);
-        int scale = (int)Port_PPU_WindowScale();
-        if (ImGui::Button("<##scale")) Port_PPU_CycleWindowScale(-1);
-        ImGui::SameLine(); ImGui::Text("%dx", scale); ImGui::SameLine();
-        if (ImGui::Button(">##scale")) Port_PPU_CycleWindowScale(+1);
+#if defined(MODE1_GBA_WIDTH) && (MODE1_GBA_WIDTH > 240)
+        {
+            bool ws = Port_Config_WidescreenEnabled();
+            ToggleRow("Widescreen (16:9)", "##ws", &ws,
+                      UiTr("Extends horizontal view to 384x160 pixels",
+                           "Estende la visuale orizzontale a 384x160 pixel"));
+            if (ImGui::Checkbox("##ws_chk", &ws)) {
+                Port_Config_SetWidescreenEnabled(ws);
+                Port_PPU_ApplyWindowScale();
+                Port_DebugMenu_ToastFromExternal(ws ? UiTr("Widescreen enabled", "Widescreen attivato")
+                                                    : UiTr("Widescreen disabled", "Widescreen disattivato"));
+            }
+        }
+#endif
 
-        StepperRow("Filter", "filter",
+        StepperRow(UiTr("Aspect Ratio", "Proporzioni (Aspect Ratio)"), "aspect",
+                   [](char*, size_t) { return Port_Config_AspectModeName(Port_Config_AspectMode()); },
+                   Port_Config_CycleAspectMode,
+                   UiTr("Fit image to screen or keep original aspect ratio",
+                        "Adatta l'immagine allo schermo o mantieni il formato originale"));
+
+        StepperRow(UiTr("Scaling Filter", "Filtro Immagine"), "filter",
                    [](char*, size_t) { return Port_PPU_PresentationModeName(); },
-                   Port_PPU_CyclePresentationMode);
+                   Port_PPU_CyclePresentationMode,
+                   UiTr("Crisp pixel-art (Nearest) or smooth (Linear)",
+                        "Nitidezza pixel-perfect (Nearest) o morbido (Linear)"));
 
-        StepperRow("Target FPS", "fps",
-                   [](char* b, size_t n) -> const char* {
-                       unsigned fps = Port_Config_TargetFps();
-                       if (fps == 0) return "uncapped";
-                       std::snprintf(b, n, "%u", fps);
-                       return b;
-                   },
-                   Port_Config_CycleTargetFps);
-        RandoUi_HelpTooltip(
-            "How often frames are presented to the display. With 'Decouple game "
-            "speed' on (default) this only changes display smoothness - the game "
-            "always runs at normal speed, and 'uncapped' acts as a persistent "
-            "fast-forward. With it off, this paces the engine directly, so 120 "
-            "runs the game at 2x speed.");
+        StepperRow(UiTr("CRT / Scanline Effect", "Effetto CRT / Scanline"), "crt",
+                   [](char*, size_t) { return Port_PPU_FilterName(); },
+                   Port_PPU_CycleFilter);
 
-        /* Decoupled pacing: game logic on a fixed tick grid, presents on the
-         * Target FPS grid (port_bios.c). Off = legacy coupled loop. */
-        ImGui::TableNextRow();
-        ImGui::TableSetColumnIndex(0); ImGui::Text("Decouple game speed");
-        ImGui::TableSetColumnIndex(1);
-        {
-            bool dec = Port_Config_GetDecoupleRender();
-            if (ImGui::Checkbox("##decouple_render", &dec)) {
-                Port_Config_SetDecoupleRender(dec);
-            }
-        }
-        RandoUi_HelpTooltip(
-            "Runs game logic at a fixed 60 Hz (or the exact GBA rate in "
-            "Console-Parity mode) no matter what Target FPS or VSync do. "
-            "Fast-forward gets faster too: the engine skips rendering the "
-            "frames it doesn't show.");
-
-        /* On-screen FPS/TPS counter (DrawFpsOverlay, port_imgui_menu.cpp). */
-        ImGui::TableNextRow();
-        ImGui::TableSetColumnIndex(0); ImGui::Text("Show FPS counter");
-        ImGui::TableSetColumnIndex(1);
-        {
-            bool sf = Port_Config_GetShowFps();
-            if (ImGui::Checkbox("##show_fps", &sf)) {
-                Port_Config_SetShowFps(sf);
-            }
-        }
-        RandoUi_HelpTooltip(
-            "Top-right overlay. FPS = frames shown per second (render rate); "
-            "TPS = game logic ticks per second. With decoupling on, TPS "
-            "staying at 60 while FPS follows your Target FPS is the split "
-            "working. TPS turns red when the game runs off-speed "
-            "(fast-forward, or the machine can't keep up).");
-
-        StepperRow("Internal scale", "iscale",
+        StepperRow(UiTr("Internal Resolution", "Risoluzione Interna"), "iscale",
                    [](char* b, size_t n) -> const char* {
                        std::snprintf(b, n, "%ux", (unsigned)Port_Config_InternalScale());
                        return b;
                    },
                    Port_Config_CycleInternalScale);
-        RandoUi_HelpTooltip(
-            "Renders the GBA frame at this integer multiple internally before "
-            "the final upscale. It only changes sampling quality when a shader "
-            "or the widescreen path resamples the image - with the default "
-            "nearest-neighbour 2D output it has no visible effect. Leave at 1x "
-            "unless a shader you're using benefits from supersampling.");
 
-        StepperRow("Aspect ratio", "aspect",
-                   [](char*, size_t) { return Port_Config_AspectModeName(Port_Config_AspectMode()); },
-                   Port_Config_CycleAspectMode);
-
-        StepperRow("Renderer", "renderer",
-                   [](char*, size_t) { return Port_Config_RenderBackendName(Port_Config_RenderBackend()); },
-                   Port_Config_CycleRenderBackend);
-        ImGui::SameLine(); ImGui::TextDisabled("(restart)");
-
-        /* GPU PPU rasterizer toggle (docs/gpu-rasterizer-design.md). Only
-         * meaningful on the SDL_GPU backend; the CPU rasterizer is the
-         * automatic fallback. Shown greyed-out otherwise. */
-        ImGui::TableNextRow();
-        ImGui::TableSetColumnIndex(0); ImGui::Text("GPU rasterizer");
-        ImGui::TableSetColumnIndex(1);
-        {
-            bool raster = Port_Config_GetGpuRaster();
-            ImGui::BeginDisabled(!gpuActive);
-            if (ImGui::Checkbox("##gpu_raster", &raster)) {
-                Port_Config_SetGpuRaster(raster);
-            }
-            ImGui::EndDisabled();
-            ImGui::SameLine();
-            ImGui::TextDisabled(gpuActive ? "(CPU fallback)" : "(needs GPU backend)");
-        }
-
-        /* GLES compute rasterizer — opt-in fallback for devices without Vulkan.
-         * ~5x slower than CPU on weak GLES GPUs (Adreno 405), so default off and
-         * only relevant when the SDL_GPU (Vulkan) backend is NOT active. */
-        if (!gpuActive) {
-            ImGui::TableNextRow();
-            ImGui::TableSetColumnIndex(0); ImGui::Text("GLES raster (exp.)");
-            ImGui::TableSetColumnIndex(1);
-            bool gles = Port_Config_GetGpuRasterGles();
-            if (ImGui::Checkbox("##gpu_raster_gles", &gles)) {
-                Port_Config_SetGpuRasterGles(gles);
-            }
-            ImGui::SameLine();
-            ImGui::TextDisabled("(often slower than CPU)");
-        }
-
-        StepperRow("Background", "bgfill",
+        StepperRow(UiTr("Letterbox Background", "Sfondo Cornici"), "bgfill",
                    [](char*, size_t) { return Port_Config_BgFillName(Port_Config_BgFill()); },
                    Port_Config_CycleBgFill);
 
-        StepperRow("CRT filter", "crt",
-                   [](char*, size_t) { return Port_PPU_FilterName(); },
-                   Port_PPU_CycleFilter);
+#ifndef __ANDROID__
+        ImGui::TableNextRow();
+        ImGui::TableSetColumnIndex(0);
+        ImGui::AlignTextToFramePadding();
+        ImGui::TextUnformatted(UiTr("Window Scale", "Scala Finestra"));
+        ImGui::TableSetColumnIndex(1);
+        {
+            const float btnW = em * 1.85f;
+            int scale = (int)Port_PPU_WindowScale();
+            if (ImGui::Button("<##scale", ImVec2(btnW, 0))) Port_PPU_CycleWindowScale(-1);
+            ImGui::SameLine();
+            ImGui::Text(" %dx ", scale);
+            ImGui::SameLine();
+            if (ImGui::Button(">##scale", ImVec2(btnW, 0))) Port_PPU_CycleWindowScale(+1);
+        }
 
+        {
+            bool fs = Port_PPU_IsFullscreen();
+            ToggleRow(UiTr("Fullscreen", "Schermo Intero (Fullscreen)"), "##fs", &fs);
+            if (ImGui::Checkbox("##fs_chk", &fs)) {
+                Port_PPU_ToggleFullscreen();
+                Port_Config_SetFullscreen(Port_PPU_IsFullscreen());
+            }
+        }
+#endif
         ImGui::EndTable();
     }
 
@@ -163,45 +144,136 @@ static void DrawRibbonDisplayTab(void) {
         Port_Config_BgFillColor(&r8, &g8, &b8);
         int rgb[3] = { (int)r8, (int)g8, (int)b8 };
         bool changed = false;
-        ImGui::Indent(150.0f);
-        ImGui::PushItemWidth(120.0f);
-        if (ImGui::SliderInt("R##bgcol_r", &rgb[0], 0, 255)) {
-            changed = true;
-        }
+        ImGui::PushItemWidth(em * 5.5f);
+        if (ImGui::SliderInt("R##bgcol_r", &rgb[0], 0, 255)) changed = true;
         ImGui::SameLine();
-        if (ImGui::SliderInt("G##bgcol_g", &rgb[1], 0, 255)) {
-            changed = true;
-        }
+        if (ImGui::SliderInt("G##bgcol_g", &rgb[1], 0, 255)) changed = true;
         ImGui::SameLine();
-        if (ImGui::SliderInt("B##bgcol_b", &rgb[2], 0, 255)) {
-            changed = true;
-        }
+        if (ImGui::SliderInt("B##bgcol_b", &rgb[2], 0, 255)) changed = true;
         ImGui::PopItemWidth();
         ImGui::SameLine();
         ImVec4 sw = ImVec4(rgb[0] / 255.0f, rgb[1] / 255.0f, rgb[2] / 255.0f, 1.0f);
-        ImGui::ColorButton("##bgcol_preview", sw,
-                           ImGuiColorEditFlags_NoPicker |
-                           ImGuiColorEditFlags_NoTooltip,
-                           ImVec2(22, 22));
-        ImGui::Unindent(150.0f);
+        ImGui::ColorButton("##bgcol_preview", sw, ImGuiColorEditFlags_NoPicker | ImGuiColorEditFlags_NoTooltip,
+                           ImVec2(em * 1.4f, em * 1.4f));
         if (changed) {
             Port_Config_SetBgFillColor((uint8_t)rgb[0], (uint8_t)rgb[1], (uint8_t)rgb[2]);
         }
     }
 
+    ImGui::Spacing();
+    ImGui::SeparatorText(UiTr("Colors & GBA Accuracy", "Colori & Fedelt\xC3\xA0 GBA"));
+    if (ImGui::BeginTable("##display_color_table", 2, tblFlags)) {
+        ImGui::TableSetupColumn("Label", ImGuiTableColumnFlags_WidthFixed, labelColW);
+        ImGui::TableSetupColumn("Value", ImGuiTableColumnFlags_WidthStretch);
+
+        {
+            bool colourCorrect = Port_PPU_ColorCorrectionEnabled();
+            ToggleRow(UiTr("GBA Color Correction", "Correzione Colori GBA"), "##colcorr", &colourCorrect,
+                      UiTr("Balances the oversaturated raw GBA palette",
+                           "Bilancia la saturazione eccessiva tipica della palette GBA grezza"));
+            if (ImGui::Checkbox("##colcorr_chk", &colourCorrect)) {
+                Port_PPU_SetColorCorrection(colourCorrect);
+                Port_Config_SetColorCorrection(colourCorrect);
+            }
+        }
+
+        {
+            bool lcdPersist = Port_Config_GetLcdPersistence();
+            ToggleRow(UiTr("LCD Persistence (Ghosting)", "Persistenza LCD (Ghosting)"), "##lcdp", &lcdPersist,
+                      UiTr("Simulates GBA LCD response trail for flicker transparency effects",
+                           "Simula la scia del display GBA per gli effetti di trasparenza"));
+            if (ImGui::Checkbox("##lcdp_chk", &lcdPersist)) {
+                Port_Config_SetLcdPersistence(lcdPersist);
+                Port_PPU_SetPersistence(lcdPersist, Port_Config_GetLcdPersistenceRho());
+            }
+            if (lcdPersist) {
+                ImGui::SameLine();
+                float rho = Port_Config_GetLcdPersistenceRho();
+                ImGui::SetNextItemWidth(em * 7.0f);
+                if (ImGui::SliderFloat("##lcd_rho", &rho, 0.0f, 0.95f, "%.2f")) {
+                    Port_Config_SetLcdPersistenceRho(rho);
+                    Port_PPU_SetPersistence(true, rho);
+                }
+            }
+        }
+
+        ImGui::EndTable();
+    }
+
+    ImGui::Spacing();
+    ImGui::SeparatorText(UiTr("Performance & Rendering", "Prestazioni & Rendering"));
+    if (ImGui::BeginTable("##display_perf_table", 2, tblFlags)) {
+        ImGui::TableSetupColumn("Label", ImGuiTableColumnFlags_WidthFixed, labelColW);
+        ImGui::TableSetupColumn("Value", ImGuiTableColumnFlags_WidthStretch);
+
+        {
+            bool sf = Port_Config_GetShowFps();
+            ToggleRow(UiTr("Show FPS / TPS Counter", "Mostra Contatore FPS / TPS"), "##show_fps", &sf,
+                      UiTr("Displays frame rate and game speed in the top-right corner",
+                           "Mostra in alto a destra il frame rate e la velocit\xC3\xA0 di gioco"));
+            if (ImGui::Checkbox("##show_fps_chk", &sf)) {
+                Port_Config_SetShowFps(sf);
+            }
+        }
+
+        StepperRow("Target FPS", "fps",
+                   [](char* b, size_t n) -> const char* {
+                       unsigned fps = Port_Config_TargetFps();
+                       if (fps == 0) return UiTr("Uncapped", "Sbloccato");
+                       std::snprintf(b, n, "%u FPS", fps);
+                       return b;
+                   },
+                   Port_Config_CycleTargetFps);
+
+        {
+            bool dec = Port_Config_GetDecoupleRender();
+            ToggleRow(UiTr("Decoupled Game Speed", "Velocit\xC3\xA0 Gioco Disaccoppiata"), "##decouple", &dec,
+                      UiTr("Keeps game logic at a fixed 60 Hz and accelerates Fast-Forward",
+                           "Mantiene la logica a 60 Hz fissi e accelera il Fast-Forward"));
+            if (ImGui::Checkbox("##decouple_render", &dec)) {
+                Port_Config_SetDecoupleRender(dec);
+            }
+        }
+
+        {
+            bool raster = Port_Config_GetGpuRaster();
+            ToggleRow(UiTr("GPU Rasterizer", "Rasterizzatore GPU"), "##gpu_raster", &raster,
+                      gpuActive ? UiTr("Renders PPU via GPU shader (disable for CPU fallback)",
+                                       "Disegna la PPU via shader GPU (disattiva per fallback CPU)")
+                                : UiTr("Requires GPU backend", "Richiede backend GPU"));
+            ImGui::BeginDisabled(!gpuActive);
+            if (ImGui::Checkbox("##gpu_raster_chk", &raster)) {
+                Port_Config_SetGpuRaster(raster);
+            }
+            ImGui::EndDisabled();
+        }
+
+        StepperRow(UiTr("Renderer Backend (restart)", "Backend Rendering (riavvio)"), "renderer",
+                   [](char*, size_t) { return Port_Config_RenderBackendName(Port_Config_RenderBackend()); },
+                   Port_Config_CycleRenderBackend,
+                   UiTr("Applies on next app launch", "Richiede il riavvio dell'applicazione"));
+
+#ifndef __ANDROID__
+        {
+            bool vsync = Port_PPU_VSyncEnabled();
+            ToggleRow("VSync", "##vsync", &vsync);
+            if (ImGui::Checkbox("##vsync_chk", &vsync)) {
+                Port_PPU_SetVSync(vsync);
+                Port_Config_SetVSync(vsync);
+            }
+        }
+#endif
+        ImGui::EndTable();
+    }
+
     const bool glslpSupported = gpuActive && Port_GPU_SupportsGlslpRuntime();
-    if (!glslpSupported) {
-        ImGui::Indent(150.0f);
-        ImGui::TextDisabled("Shader preset: %s", gpuActive ? "(SPIR-V backend required)" : "(GPU backend required)");
-        ImGui::Unindent(150.0f);
-    } else {
+    if (glslpSupported && ImGui::CollapsingHeader("Shader Presets (.glslp)")) {
         static std::vector<std::string> sPresetPaths;
         static std::string              sActivePreset;
         static bool                     sScannedOnce = false;
 
         auto refresh = [&] {
             sPresetPaths.clear();
-            std::error_code ec;
             std::vector<std::string> roots;
             if (const char* base = SDL_GetBasePath()) {
                 std::string b = base;
@@ -215,10 +287,6 @@ static void DrawRibbonDisplayTab(void) {
             for (const auto& root : roots) {
                 std::error_code dec;
                 if (!std::filesystem::is_directory(root, dec)) continue;
-                /* skip_permission_denied + the non-throwing increment(ec)
-                 * overload: the range-for/`operator++` form throws
-                 * filesystem_error mid-recursion on an unreadable entry,
-                 * and nothing here catches it -> std::terminate. */
                 std::filesystem::recursive_directory_iterator it(
                     root, std::filesystem::directory_options::skip_permission_denied, dec);
                 const std::filesystem::recursive_directory_iterator end;
@@ -235,8 +303,6 @@ static void DrawRibbonDisplayTab(void) {
         };
         if (!sScannedOnce) {
             refresh();
-            /* Reflect the preset loaded from config at startup (#146) so the
-             * list shows it selected and "active: ..." renders. */
             if (sActivePreset.empty() && Port_GlslpRuntime_IsActive()) {
                 const char* sp = Port_Config_GetShaderPreset();
                 if (sp && sp[0]) sActivePreset = sp;
@@ -244,135 +310,41 @@ static void DrawRibbonDisplayTab(void) {
             sScannedOnce = true;
         }
 
-        ImGui::Indent(150.0f);
-        ImGui::TextUnformatted("Shader preset"); ImGui::SameLine();
-        if (ImGui::Button("Off##preset")) {
+        if (ImGui::Button("Disattiva Shader##preset")) {
             Port_GlslpRuntime_Unload();
             sActivePreset.clear();
-            Port_Config_SetShaderPreset("");                  /* persist (#146) */
-            Port_DebugMenu_ToastFromExternal("Shader preset off");
+            Port_Config_SetShaderPreset("");
+            Port_DebugMenu_ToastFromExternal("Shader preset disattivato");
         }
         ImGui::SameLine();
-        if (ImGui::Button("Rescan##preset")) refresh();
+        if (ImGui::Button("Ricarica Lista##preset")) refresh();
         ImGui::SameLine();
-        ImGui::TextDisabled("(%zu found)", sPresetPaths.size());
-
-        const bool active = Port_GlslpRuntime_IsActive() != 0;
-        if (active && !sActivePreset.empty()) {
-            ImGui::TextDisabled("  active: %s", sActivePreset.c_str());
-        }
+        ImGui::TextDisabled("(%zu trovati)", sPresetPaths.size());
 
         if (!sPresetPaths.empty()) {
             if (ImGui::BeginListBox("##preset_list",
-                    ImVec2(ImGui::GetContentRegionAvail().x - 4.0f, ImGui::GetTextLineHeightWithSpacing() * 3.5f))) {
+                    ImVec2(-1.0f, ImGui::GetTextLineHeightWithSpacing() * 4.0f))) {
                 for (size_t i = 0; i < sPresetPaths.size(); ++i) {
-                    bool selected = (sPresetPaths[i] == sActivePreset)
-                                    && Port_GlslpRuntime_IsActive();
+                    bool selected = (sPresetPaths[i] == sActivePreset) && Port_GlslpRuntime_IsActive();
                     std::string label = std::filesystem::path(sPresetPaths[i]).filename().string();
-                    label += "    "; label += sPresetPaths[i];
                     if (ImGui::Selectable(label.c_str(), selected)) {
                         if (selected) {
                             Port_GlslpRuntime_Unload();
                             sActivePreset.clear();
-                            Port_Config_SetShaderPreset("");          /* persist (#146) */
-                            Port_DebugMenu_ToastFromExternal("Shader preset off");
+                            Port_Config_SetShaderPreset("");
+                            Port_DebugMenu_ToastFromExternal("Shader preset disattivato");
                         } else if (Port_GlslpRuntime_Load(sPresetPaths[i].c_str())) {
                             sActivePreset = sPresetPaths[i];
-                            Port_Config_SetShaderPreset(sActivePreset.c_str()); /* persist (#146) */
-                            Port_DebugMenu_ToastFromExternal("Preset loaded");
+                            Port_Config_SetShaderPreset(sActivePreset.c_str());
+                            Port_DebugMenu_ToastFromExternal("Shader caricato");
                         } else {
-                            Port_DebugMenu_ToastFromExternal("Preset load FAILED");
+                            Port_DebugMenu_ToastFromExternal("Errore caricamento shader");
                         }
                     }
                 }
                 ImGui::EndListBox();
             }
         }
-        ImGui::Unindent(150.0f);
     }
-
-    ImGui::Separator();
-
-#if defined(MODE1_GBA_WIDTH) && (MODE1_GBA_WIDTH > 240)
-    {
-        bool ws = Port_Config_WidescreenEnabled();
-        if (ImGui::Checkbox("Widescreen (WIP)", &ws)) {
-            Port_Config_SetWidescreenEnabled(ws);
-            Port_PPU_ApplyWindowScale();
-            Port_DebugMenu_ToastFromExternal(ws ? "Widescreen enabled" : "Widescreen disabled");
-        }
-        ImGui::SameLine();
-    }
-#endif
-
-    bool fs = Port_PPU_IsFullscreen();
-    if (ImGui::Checkbox("Fullscreen", &fs)) {
-        Port_PPU_ToggleFullscreen();
-        Port_Config_SetFullscreen(Port_PPU_IsFullscreen());   /* persist (#146) */
-    }
-    ImGui::SameLine();
-
-    bool hideCur = Port_Config_GetFullscreenHideCursor();
-    if (ImGui::Checkbox("Hide cursor in fullscreen", &hideCur)) {
-        Port_Config_SetFullscreenHideCursor(hideCur);         /* persist */
-        Port_PPU_ApplyCursorVisibility();                     /* live, if already fullscreen */
-    }
-    ImGui::SameLine();
-
-    bool vsync = Port_PPU_VSyncEnabled();
-    if (ImGui::Checkbox("VSync", &vsync)) {
-        Port_PPU_SetVSync(vsync);
-        Port_Config_SetVSync(vsync);                          /* persist (#146) */
-    }
-    ImGui::SameLine();
-
-    bool drp = Port_DiscordRpc_IsEnabled();
-    if (ImGui::Checkbox("Discord RPC", &drp)) {
-        Port_DiscordRpc_SetEnabled(drp);
-        Port_Config_SetDiscordRpc(drp);                       /* persist (#146) */
-    }
-    RandoUi_HelpTooltip(
-        "Publishes your current area and heart/rupee count to Discord as a "
-        "Rich Presence status.\n\n"
-        "Requires a Discord application ID compiled into the build "
-        "(discord_app_id.txt, not shipped by default), so it stays inactive in "
-        "release builds that ship without one. Also currently a no-op on "
-        "Windows (the named-pipe IPC client is not yet implemented).");
-
-    bool colourCorrect = Port_PPU_ColorCorrectionEnabled();
-    if (ImGui::Checkbox("GBA colour correction", &colourCorrect)) {
-        Port_PPU_SetColorCorrection(colourCorrect);           /* live */
-        Port_Config_SetColorCorrection(colourCorrect);        /* persist */
-    }
-    RandoUi_HelpTooltip(
-        "Remaps the raw 15-bit palette through the GBA's dim, high-gamma "
-        "reflective-LCD response so colours match the handheld instead of "
-        "looking over-bright on a modern sRGB display. Default on.");
-
-    bool lcdPersist = Port_Config_GetLcdPersistence();
-    if (ImGui::Checkbox("LCD persistence", &lcdPersist)) {
-        Port_Config_SetLcdPersistence(lcdPersist);            /* persist */
-        Port_PPU_SetPersistence(lcdPersist, Port_Config_GetLcdPersistenceRho());
-    }
-    RandoUi_HelpTooltip(
-        "Reproduces the slow pixel response (ghosting) of the GBA LCD by "
-        "blending each frame into the previous one. Some flicker/dither "
-        "transparency effects were designed around it. Default off.");
-    if (lcdPersist) {
-        float rho = Port_Config_GetLcdPersistenceRho();
-        ImGui::SetNextItemWidth(160.0f);
-        if (ImGui::SliderFloat("Persistence strength", &rho, 0.0f, 0.95f, "%.2f")) {
-            Port_Config_SetLcdPersistenceRho(rho);            /* persist */
-            Port_PPU_SetPersistence(true, rho);               /* live */
-        }
-    }
-
-    bool holdAdv = Port_Config_GetHoldToAdvanceText();
-    if (ImGui::Checkbox("Hold to advance text", &holdAdv)) {
-        Port_Config_SetHoldToAdvanceText(holdAdv);
-    }
-    RandoUi_HelpTooltip(
-        "When on, holding an advance button (A / B / R / D-pad) keeps text "
-        "pages turning instead of needing a fresh press each page. Default off "
-        "preserves GBA-accurate timing for timed cutscenes.");
 }
+

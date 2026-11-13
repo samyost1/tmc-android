@@ -93,7 +93,8 @@ uint bg_text_pixel(int bg, int x, int line, out uint pal_index) {
     int shadow_base = params.wsbase[bg];
     bool has_shadow = shadow_base >= 0;
     bool ws_shadow_active = (map_w < 64) && has_shadow;
-    int render_max_x = (map_w >= 64) ? fw : (has_shadow ? fw : clip);
+    int ws_bg_max_x = has_shadow ? fw : ((shadow_base < -1) ? (-shadow_base) : clip);
+    int render_max_x = (map_w >= 64) ? fw : ws_bg_max_x;
     if (render_max_x > fw) render_max_x = fw;
     bool hud_anchor = (bg == 0) && (params.ws.z != 0) && (fw > clip);
     int hud_native_x = params.ws.w; /* 176 */
@@ -508,7 +509,14 @@ vec4 ppu_pixel(int x, int line) {
         uint win0v = io_u16(line, IO_WIN0V);
         uint win1h = io_u16(line, IO_WIN1H);
         uint win1v = io_u16(line, IO_WIN1V);
+        int w0_ofs = sx16(io_u16(line, 0x58));
         int w0l = int(win0h >> 8u), w0r = int(win0h & 0xFFu);
+        if (w0_ofs != 0 && (w0l != 0 || w0r != 0)) {
+            w0l += w0_ofs;
+            w0r += w0_ofs;
+            if (w0l < 0) w0l = 0;
+            if (w0r < 0) w0r = 0;
+        }
         int w0t = int(win0v >> 8u), w0b = int(win0v & 0xFFu);
         int w1l = int(win1h >> 8u), w1r = int(win1h & 0xFFu);
         int w1t = int(win1v >> 8u), w1b = int(win1v & 0xFFu);

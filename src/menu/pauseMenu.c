@@ -25,6 +25,7 @@
 #include "port_gba_mem.h"
 #include "port_softslots.h"
 #include "rando/rando_runtime.h"
+void Port_SecondScreen_CycleTab(int direction);
 #endif
 
 extern void sub_080A4DB8(u32);
@@ -131,19 +132,14 @@ void PauseMenu_Variant2(void) {
 #endif
     if (sub_080A51F4() && (gMenu.field_0xc != NULL)) {
         iVar1 = -1;
-        switch (gInput.newKeys) {
-            case START_BUTTON:
-                iVar1 = 0;
-                break;
-            case L_BUTTON:
-                iVar1 = 1;
-                break;
-            case R_BUTTON:
-                iVar1 = 2;
-                break;
-            case B_BUTTON:
-                iVar1 = 3;
-                break;
+        if (gInput.newKeys & START_BUTTON) {
+            iVar1 = 0;
+        } else if (gInput.newKeys & L_BUTTON) {
+            iVar1 = 1;
+        } else if (gInput.newKeys & R_BUTTON) {
+            iVar1 = 2;
+        } else if (gInput.newKeys & B_BUTTON) {
+            iVar1 = 3;
         }
         if (iVar1 >= 0) {
             switch (bVar5 = gMenu.field_0xc[iVar1]) {
@@ -160,6 +156,13 @@ void PauseMenu_Variant2(void) {
                         bVar5 = gMenu.field_0xc[iVar4];
                     }
                 default:
+#ifdef PC_PORT
+                    if (iVar1 == 1) {
+                        Port_SecondScreen_CycleTab(-1);
+                    } else if (iVar1 == 2) {
+                        Port_SecondScreen_CycleTab(1);
+                    }
+#endif
                     gPauseMenuOptions.screen2 = bVar5;
                     SoundReq(SFX_TEXTBOX_OPEN);
                     gMenu.field_0xc = NULL;
@@ -441,6 +444,15 @@ void PauseMenu_ItemMenu_Update(void) {
                         extern void Port_SoftSlots_SetAssignment(int s, unsigned char id);
                         if ((gInput.heldKeys & SELECT_BUTTON) && Port_Reborn_IsEnabled(10)) {
                             Port_SoftSlots_SetAssignment((int)slot, (unsigned char)gPauseMenu.items[menuSlot]);
+                            SoundReq(SFX_TEXTBOX_SELECT);
+                            break;
+                        }
+
+                         /*works only if pressed softslot was
+                        equipped with anything from debug menu
+                        since requires sActiveSlot to be non -1*/
+                        if(Port_SoftSlots_IsBHeld()){
+                            Port_SoftSlots_SetAssignment(Port_SoftSlots_GetActiveSlot(), (unsigned char)gPauseMenu.items[menuSlot]);
                             SoundReq(SFX_TEXTBOX_SELECT);
                             break;
                         }
